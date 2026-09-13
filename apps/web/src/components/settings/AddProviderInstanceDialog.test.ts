@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveWizardNavigation } from "./AddProviderInstanceDialog.logic";
+import { ProviderDriverKind } from "@t3tools/contracts";
+
+import { addProviderWizardSteps, resolveWizardNavigation } from "./AddProviderInstanceDialog.logic";
 
 describe("resolveWizardNavigation", () => {
   const invalidId = { instanceIdError: "Instance ID is required." };
@@ -40,5 +42,28 @@ describe("resolveWizardNavigation", () => {
   it("clamps requested steps to the wizard bounds", () => {
     expect(resolveWizardNavigation(2, 8, 3, validId)).toEqual({ kind: "navigate", step: 2 });
     expect(resolveWizardNavigation(0, -1, 3, invalidId)).toEqual({ kind: "navigate", step: 0 });
+  });
+
+  it("stays put once the instance has been created", () => {
+    expect(resolveWizardNavigation(3, 0, 4, { ...validId, locked: true })).toEqual({
+      kind: "navigate",
+      step: 3,
+    });
+  });
+});
+
+describe("addProviderWizardSteps", () => {
+  it("adds a sign-in step for Codex only", () => {
+    expect(addProviderWizardSteps(ProviderDriverKind.make("codex"))).toEqual([
+      "Driver",
+      "Identity",
+      "Config",
+      "Sign in",
+    ]);
+    expect(addProviderWizardSteps(ProviderDriverKind.make("claudeAgent"))).toEqual([
+      "Driver",
+      "Identity",
+      "Config",
+    ]);
   });
 });
