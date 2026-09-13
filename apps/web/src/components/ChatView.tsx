@@ -434,6 +434,8 @@ import {
   rememberReadyThreadTimeline,
   resolveThreadSwitchTimeline,
   timelineHasEphemeralPreviewUrls,
+  type LiveTurnDiffObservation,
+  observeLiveTurnDiff,
   observeProactivePanelUserChoice,
   resolveProactiveTurnDiffAction,
   resolveThreadMetadataUpdateForNextTurn,
@@ -4477,6 +4479,48 @@ export default function ChatView(props: ChatViewProps) {
     shouldUseRightPanelSheet,
     supportsPullRequests,
     threadDetailLoading,
+  ]);
+  // Live diff: open the working-tree diff the first time a running turn edits
+  // a file, so the panel is up while changes land rather than after the turn.
+  const liveTurnDiffRef = useRef<LiveTurnDiffObservation | null>(null);
+  useEffect(() => {
+    if (!isServerThread || activeThreadRef === null) {
+      liveTurnDiffRef.current = null;
+      return;
+    }
+    const panels = useRightPanelStore.getState();
+    const { next, open } = observeLiveTurnDiff(liveTurnDiffRef.current, {
+      runningTurnId: activeRunningTurnId,
+      mutationId: workspaceMutationId,
+      userActionRevision: panels.getUserActionRevision(activeThreadRef),
+    });
+    liveTurnDiffRef.current = next;
+    if (!open) return;
+    const proactivePanelsEnabled = settings.proactivePanelsEnabled && !shouldUseRightPanelSheet;
+    if (
+      !proactivePanelsEnabled ||
+      !clientSettingsHydrated ||
+      gitStatusQuery.data?.isRepo !== true
+    ) {
+      return;
+    }
+    if (
+      !panels.openProactive(activeThreadRef, { id: "diff", kind: "diff" }, next.userActionRevision)
+    ) {
+      return;
+    }
+    useDiffPanelStore.getState().selectGitScope(activeThreadRef, "unstaged");
+    onDiffPanelOpen?.();
+  }, [
+    activeRunningTurnId,
+    activeThreadRef,
+    clientSettingsHydrated,
+    gitStatusQuery.data?.isRepo,
+    isServerThread,
+    onDiffPanelOpen,
+    settings.proactivePanelsEnabled,
+    shouldUseRightPanelSheet,
+    workspaceMutationId,
   ]);
   const closePreviewPanel = useCallback(() => {
     if (activeThreadRef) {

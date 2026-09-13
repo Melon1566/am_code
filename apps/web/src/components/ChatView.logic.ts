@@ -173,6 +173,57 @@ export function shouldOpenProactiveTurnDiff(input: {
   );
 }
 
+export interface LiveTurnDiffObservation {
+  readonly turnId: TurnId | null;
+  /** Workspace mutation id when the turn was first seen; the next change is the first edit. */
+  readonly mutationIdAtStart: string | null;
+  readonly opened: boolean;
+  /** Panel revision captured at turn start, so a panel choice made during the turn wins. */
+  readonly userActionRevision: number;
+}
+
+/**
+ * Open the diff panel the first time a running turn changes the workspace.
+ * `mutationId` comes from `latestWorkspaceMutationId` and moves once per agent
+ * file edit or command. One open per turn: later edits refresh the panel that
+ * is already showing, and a user who closed it is left alone.
+ */
+export function observeLiveTurnDiff(
+  previous: LiveTurnDiffObservation | null,
+  input: { runningTurnId: TurnId | null; mutationId: string | null; userActionRevision: number },
+): { next: LiveTurnDiffObservation; open: boolean } {
+  if (input.runningTurnId === null) {
+    return {
+      next: {
+        turnId: null,
+        mutationIdAtStart: input.mutationId,
+        opened: false,
+        userActionRevision: input.userActionRevision,
+      },
+      open: false,
+    };
+  }
+  if (previous === null || previous.turnId !== input.runningTurnId) {
+    return {
+      next: {
+        turnId: input.runningTurnId,
+        mutationIdAtStart: input.mutationId,
+        opened: false,
+        userActionRevision: input.userActionRevision,
+      },
+      open: false,
+    };
+  }
+  if (
+    previous.opened ||
+    input.mutationId === null ||
+    input.mutationId === previous.mutationIdAtStart
+  ) {
+    return { next: previous, open: false };
+  }
+  return { next: { ...previous, opened: true }, open: true };
+}
+
 export function resolveProactiveTurnDiffAction(input: {
   checkpoint: Pick<TurnDiffSummary, "status" | "files"> | undefined;
   isGitRepo: boolean | undefined;

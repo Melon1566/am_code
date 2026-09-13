@@ -92,6 +92,11 @@ uses the project's instructions and recent commit subjects.
 
 ## Review and merge
 
+Press `mod+d` in a thread, or pick **Toggle diff panel** from the command palette, to open the
+diff panel in the right bar. It shows the working tree or the branch, and refreshes after each
+file the agent edits, so you can watch changes land while a turn runs. With **Proactive
+panels** on in Settings, it opens by itself the first time a turn edits a file.
+
 Open **Pull requests** to review changes and comments, request reviewers, check out a branch,
 or merge. You can edit review titles and descriptions and your own comments where the host allows it.
 GitLab calls these merge requests.
