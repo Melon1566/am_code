@@ -1,10 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId, ProviderSetupError, type ProviderAuthState } from "@t3tools/contracts";
+import { ProviderInstanceId, type ProviderAuthState } from "@t3tools/contracts";
+import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import type * as CodexErrors from "effect-codex-app-server/errors";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 
 import { makeCodexAuth, type CodexAuth, type CodexLoginClient } from "./CodexAuth.ts";
@@ -15,7 +17,12 @@ const otherOwner = "t3-session-other";
 const authUrl = "https://auth.openai.com/oauth/authorize?state=test";
 const verificationUrl = "https://auth.openai.com/codex/device";
 
+class TransportClosed extends Data.TaggedError("TransportClosed") {}
+
 type LoginCompleted = CodexSchema.V2AccountLoginCompletedNotification;
+type CompletionHandler = (
+  payload: LoginCompleted,
+) => Effect.Effect<void, CodexErrors.CodexAppServerError>;
 
 const phase = (auth: CodexAuth, value: ProviderAuthState["phase"], sessionId = owner) =>
   auth.controller.subscribe(sessionId).pipe(
@@ -29,34 +36,34 @@ const makeHarness = Effect.fn("makeCodexAuthHarness")(function* (
 ) {
   const events: string[] = [];
   const clientClosed = yield* Deferred.make<void>();
-  let completion: ((payload: LoginCompleted) => Effect.Effect<void, unknown>) | undefined;
+  let completion: CompletionHandler | undefined;
   let authenticated = 0;
   let signedOut = 0;
 
-  const client: CodexLoginClient = {
-    request: ((method: string, payload: unknown) =>
-      Effect.gen(function* () {
-        events.push(method);
-        if (method === "account/login/start") {
-          if (options.failStart) {
-            return yield* new ProviderSetupError({
-              instanceId,
-              operation: "start",
-              detail: "boom",
-            });
-          }
-          const type = (payload as { type: string }).type;
-          return type === "chatgptDeviceCode"
-            ? { type, loginId: "login-1", userCode: "ABCD-1234", verificationUrl }
-            : { type, loginId: "login-1", authUrl };
+  // The fake answers the two login requests the controller makes; everything
+  // else is out of scope, so the cast is confined to the harness.
+  const request = (method: string, payload: unknown): Effect.Effect<unknown, TransportClosed> =>
+    Effect.gen(function* () {
+      events.push(method);
+      if (method === "account/login/start") {
+        if (options.failStart) {
+          return yield* new TransportClosed();
         }
-        return {};
-      })) as CodexLoginClient["request"],
-    handleServerNotification: ((method: string, handler: typeof completion) =>
-      Effect.sync(() => {
-        if (method === "account/login/completed") completion = handler;
-      })) as CodexLoginClient["handleServerNotification"],
-  };
+        const type = (payload as { type: string }).type;
+        return type === "chatgptDeviceCode"
+          ? { type, loginId: "login-1", userCode: "ABCD-1234", verificationUrl }
+          : { type, loginId: "login-1", authUrl };
+      }
+      return {};
+    });
+  const handleServerNotification = (method: string, handler: CompletionHandler) =>
+    Effect.sync(() => {
+      if (method === "account/login/completed") completion = handler;
+    });
+  const client = {
+    request,
+    handleServerNotification,
+  } as unknown as CodexLoginClient;
 
   const auth = yield* makeCodexAuth({
     instanceId,

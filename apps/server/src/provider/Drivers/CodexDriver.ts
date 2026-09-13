@@ -21,7 +21,7 @@
  *
  * @module provider/Drivers/CodexDriver
  */
-import { CodexSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { CodexSettings, ProviderDriverKind, ProviderSetupError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -36,6 +36,7 @@ import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
+import { makeCodexAuth } from "../CodexAuth.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import {
   CODEX_RESET_CREDIT_TIMEOUT,
@@ -137,13 +138,19 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const homeLayout = yield* resolveCodexHomeLayout(config);
       const continuationIdentity = codexContinuationIdentity(homeLayout);
-      const stampIdentity = withInstanceIdentity({
+      const stampInstance = withInstanceIdentity({
         instanceId,
         driverKind: DRIVER_KIND,
         displayName,
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
         pooled: config.accountPooling,
+      });
+      // Codex signs in through the app-server login API; there is no managed
+      // runtime to install.
+      const stampIdentity = (draft: Parameters<typeof stampInstance>[0]) => ({
+        ...stampInstance(draft),
+        setup: { canAuthenticate: true, canInstall: false },
       });
       yield* materializeCodexShadowHome(homeLayout).pipe(
         Effect.mapError(
@@ -276,6 +283,38 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
               ),
             );
 
+      const codexAuth = yield* makeCodexAuth({
+        instanceId,
+        // Account-level: any cwd serves. CODEX_HOME is the effective home, so
+        // an auth-overlay instance signs into its own shadow auth.json.
+        openClient: withCodexAppServerClient({
+          binaryPath: effectiveConfig.binaryPath,
+          homePath: effectiveConfig.homePath,
+          launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+          cwd: process.cwd(),
+          environment: processEnv,
+        }).pipe(
+          Effect.map(({ client }) => client),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.tapError((cause) =>
+            Effect.logWarning("codex sign-in could not start app-server", {
+              instanceId,
+              cause: String(cause),
+            }),
+          ),
+          Effect.mapError(
+            () =>
+              new ProviderSetupError({
+                instanceId,
+                operation: "start",
+                detail: "Codex could not be started for sign-in. Check the binary path.",
+              }),
+          ),
+        ),
+        onAuthenticated: snapshot.refresh.pipe(Effect.asVoid),
+        onSignedOut: snapshot.refresh.pipe(Effect.asVoid),
+      });
+
       // Redemption spends something on the user's account. It serialises on
       // the account (instances sharing a Codex home share the credit), keeps
       // one idempotency key until Codex reports an outcome, and is bounded so
@@ -348,6 +387,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         snapshotForCwd,
         consumeResetCredit,
+        auth: codexAuth.controller,
         adapter,
         textGeneration,
       } satisfies ProviderInstance;
