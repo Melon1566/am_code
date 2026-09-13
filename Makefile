@@ -13,7 +13,10 @@ ARCH ?= arm64
 RUST_TARGET := aarch64-apple-darwin
 
 # The repo needs Node 24+; the shell default here is an older nvm install.
-export PATH := /opt/homebrew/opt/node/bin:$(CURDIR)/node_modules/.bin:$(PATH)
+# Recipes call node by absolute path: GNU make execs simple commands with its
+# own PATH, so the export below only reaches programs the build spawns.
+NODE_BIN ?= /opt/homebrew/opt/node/bin
+export PATH := $(NODE_BIN):$(CURDIR)/node_modules/.bin:$(PATH)
 # Rust is not installed, so the resource-monitor helper is borrowed from the
 # installed release build instead of compiled. Set to 0 to compile it.
 export T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR ?= 1
@@ -30,7 +33,7 @@ help:
 	@sed -n '5,9p' $(MAKEFILE_LIST) | sed 's/^#   //'
 
 app: monitor node_modules .env
-	node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch $(ARCH)
+	$(NODE_BIN)/node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch $(ARCH)
 	rm -rf "$(APP)"
 	cd release && unzip -q -o "$$(ls -t T3-Code-*-$(ARCH).zip | head -1)"
 	@xattr -dr com.apple.quarantine "$(APP)" 2>/dev/null || true
@@ -58,7 +61,7 @@ monitor:
 	fi
 
 node_modules:
-	npx -y pnpm@11.10.0 install
+	$(NODE_BIN)/npx -y pnpm@11.10.0 install
 	git checkout -- pnpm-lock.yaml
 
 .env:
