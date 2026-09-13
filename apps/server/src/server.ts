@@ -56,6 +56,7 @@ import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
 import * as GitLabCli from "./sourceControl/GitLabCli.ts";
 import * as ForgejoCli from "./sourceControl/ForgejoCli.ts";
+import * as ForgejoServerTokens from "./sourceControl/ForgejoServerTokens.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -323,7 +324,7 @@ const SourceControlProviderRegistryLayerLive = SourceControlProviderRegistry.lay
       BitbucketApi.layer,
       GitHubCli.layer,
       GitLabCli.layer,
-      ForgejoCli.layer,
+      ForgejoCli.layer.pipe(Layer.provide(ForgejoServerTokens.layer)),
     ),
   ),
   Layer.provideMerge(GitVcsDriver.layer),

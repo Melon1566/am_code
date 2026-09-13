@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import * as Clock from "effect/Clock";
@@ -16,6 +17,7 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 import type { SourceControlProviderContext } from "./SourceControlProvider.ts";
+import { ForgejoServerTokens, type ConfiguredForgejoServer } from "./ForgejoServerTokens.ts";
 
 const encodeApiBody = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -111,7 +113,8 @@ export interface ForgejoRepositoryInput {
 }
 
 export interface ForgejoRepository {
-  readonly command?: "fj" | "tea";
+  /** `token` means an access token from Settings or the environment, no CLI involved. */
+  readonly command?: "fj" | "tea" | "token";
   readonly login: string;
   readonly repository: string;
   readonly baseUrl: string;
@@ -215,6 +218,30 @@ export const make = Effect.gen(function* () {
   const process = yield* VcsProcess.VcsProcess;
   const fileSystem = yield* FileSystem.FileSystem;
   const httpClient = yield* HttpClient.HttpClient;
+  // Optional: without the tokens service in scope, only fj and tea logins apply.
+  const tokens = yield* Effect.serviceOption(ForgejoServerTokens);
+  const listConfiguredServers: Effect.Effect<ReadonlyArray<ConfiguredForgejoServer>> =
+    Option.isSome(tokens) ? tokens.value.list : Effect.succeed([]);
+  const trimSlash = (url: string) => url.replace(/\/+$/, "");
+  // Configured servers look like logins so the remote matching rules apply as-is.
+  const configuredLogins = listConfiguredServers.pipe(
+    Effect.map((servers) =>
+      servers.map((server) => ({
+        name: server.url,
+        url: server.url,
+        user: "",
+        default: servers.length === 1 ? "true" : "false",
+        valid: "true",
+      })),
+    ),
+  );
+  const configuredToken = (baseUrl: string) =>
+    listConfiguredServers.pipe(
+      Effect.map(
+        (servers) =>
+          servers.find((server) => trimSlash(server.url) === trimSlash(baseUrl))?.accessToken,
+      ),
+    );
   const authLock = yield* Semaphore.make(1);
   const authenticated = new Map<string, { token: string; time: number }>();
   const execute: ForgejoCli["Service"]["execute"] = (input) =>
@@ -448,21 +475,32 @@ export const make = Effect.gen(function* () {
   const getAccount: NonNullable<ForgejoCli["Service"]["getAccount"]> = Effect.fn(
     "ForgejoCli.getAccount",
   )(function* (input) {
-    const logins = yield* listLogins({ cwd: input.cwd, command: "fj", remoteUrl: input.baseUrl });
-    const login = logins.find(
-      (item) => item.url.replace(/\/+$/, "") === input.baseUrl.replace(/\/+$/, ""),
-    );
-    if (!login)
-      return yield* new ForgejoCliError({
-        command: "fj",
+    const configured = yield* configuredToken(input.baseUrl);
+    let token: string;
+    let baseUrl: string;
+    if (configured) {
+      token = configured;
+      baseUrl = trimSlash(input.baseUrl);
+    } else {
+      const logins = yield* listLogins({
         cwd: input.cwd,
-        reason: "authentication",
-        detail: "fj has no credentials for this server.",
+        command: "fj",
+        remoteUrl: input.baseUrl,
       });
-    const token = yield* authenticateFj(input.cwd, login);
+      const login = logins.find((item) => trimSlash(item.url) === trimSlash(input.baseUrl));
+      if (!login)
+        return yield* new ForgejoCliError({
+          command: "fj",
+          cwd: input.cwd,
+          reason: "authentication",
+          detail: "fj has no credentials for this server.",
+        });
+      token = yield* authenticateFj(input.cwd, login);
+      baseUrl = trimSlash(login.url);
+    }
     const currentUser = yield* requestFj({
       cwd: input.cwd,
-      baseUrl: login.url.replace(/\/+$/, ""),
+      baseUrl,
       token,
       path: "user",
     });
@@ -557,9 +595,11 @@ export const make = Effect.gen(function* () {
         ? matchForgejoLogin(logins, remote, remote.ssh ? requestedHost : undefined, matchHostOnly)
         : (logins.find((item) => item.default === "true") ??
           (new Set(logins.map((item) => item.name)).size === 1 ? logins[0] : undefined));
-    let login = selectLogin(fjLogins);
-    let command: "fj" | "tea" = "fj";
+    const configured = selectLogin(yield* configuredLogins);
+    let login = configured ?? selectLogin(fjLogins);
+    let command: "fj" | "tea" | "token" = configured ? "token" : "fj";
     if (
+      !configured &&
       !login &&
       fjLogins.some(
         (item) =>
@@ -579,7 +619,7 @@ export const make = Effect.gen(function* () {
         });
       if (available.failure.reason !== "missing-cli") return yield* available.failure;
     }
-    if (login) {
+    if (!configured && login) {
       const auth = yield* authenticateFj(input.cwd, login).pipe(Effect.result);
       if (Result.isFailure(auth)) {
         if (auth.failure.reason === "missing-cli") login = undefined;
@@ -596,7 +636,7 @@ export const make = Effect.gen(function* () {
         cwd: input.cwd,
         reason: "authentication",
         detail:
-          "No matching Forgejo login. Use `fj auth login`, `fj auth add-token`, or `tea login add` for this server; choose a default when multiple tea accounts match.",
+          "No matching Forgejo login. Add an access token for this server in Settings → Source control, or use `fj auth login`, `fj auth add-token`, or `tea login add`; choose a default when multiple tea accounts match.",
       });
     if (hostOnly)
       return { command, login: login.name, repository: "", baseUrl: login.url.replace(/\/+$/, "") };
@@ -612,7 +652,7 @@ export const make = Effect.gen(function* () {
         ? path.slice(basePath.length + 1)
         : path;
     const repositoryPath = relativePath.replace(/\/pulls\/\d+.*$/, "").replace(/\.git$/, "");
-    if (command === "fj" && !repositoryPath.includes("/")) {
+    if (command !== "tea" && !repositoryPath.includes("/")) {
       login = { ...login, user: yield* getAccount({ cwd: input.cwd, baseUrl: login.url }) };
     }
     const repository = repositoryPath.includes("/")
@@ -620,7 +660,7 @@ export const make = Effect.gen(function* () {
       : `${login.user}/${repositoryPath}`;
     if (!/^[^/\s]+\/[^/\s]+$/.test(repository))
       return yield* new ForgejoCliError({
-        command,
+        command: command === "token" ? "fj" : command,
         cwd: input.cwd,
         detail: "Specify a Forgejo repository as owner/repository or its full server URL.",
       });
@@ -653,6 +693,24 @@ export const make = Effect.gen(function* () {
       if (path === prefix || path.startsWith(`${prefix}/`) || path.startsWith(`${prefix}?`)) {
         path = `repos/${repository.repository.split("/").map(encodeURIComponent).join("/")}${path.slice(prefix.length)}`;
       }
+    }
+    if (repository.command === "token") {
+      const token = yield* configuredToken(repository.baseUrl);
+      if (!token)
+        return yield* new ForgejoCliError({
+          command: "fj",
+          cwd: input.cwd,
+          reason: "authentication",
+          detail: "The access token for this Forgejo server is no longer configured.",
+        });
+      return yield* requestFj({
+        cwd: input.cwd,
+        baseUrl: repository.baseUrl,
+        token,
+        path,
+        ...(input.method === undefined ? {} : { method: input.method }),
+        ...(stdin === undefined ? {} : { body: stdin }),
+      });
     }
     if (repository.command === "fj") {
       const token = (yield* readKeys(input.cwd)).hosts[repository.login]?.token;
