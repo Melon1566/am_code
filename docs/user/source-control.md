@@ -19,10 +19,27 @@ gh auth login
 
 ### Forgejo and Gitea
 
-Install [Forgejo CLI (`fj`)](https://codeberg.org/forgejo-contrib/forgejo-cli) or
-[Gitea CLI (`tea`)](https://gitea.com/gitea/tea) 0.16 or later on your T3 Code server.
-Sign in with `fj --host https://your-server auth add-token` or `tea login add`.
-Repeat for each server you use, including Codeberg.
+The quickest setup needs no extra tools. Create an access token on your Forgejo or Gitea
+server with read and write access to repositories, issues, and pull requests, plus read
+access to your user. Then open **Settings → Source control**, expand the **Forgejo / Gitea**
+row, and add the server URL and token under **Servers**. Repeat for each server, including
+Codeberg. T3 Code stores the token on the server machine, never in a client.
+
+You can also supply one server through the environment of the machine that runs T3 Code:
+
+```bash
+export T3CODE_FORGEJO_URL="https://forge.example.com"
+export T3CODE_FORGEJO_ACCESS_TOKEN="your-token"
+```
+
+That server appears in Settings marked **From environment**. Saving a token for the same URL
+in the app overrides it; removing the override falls back to the environment again. Restart
+the server after changing these variables.
+
+If you prefer the CLIs, install [Forgejo CLI (`fj`)](https://codeberg.org/forgejo-contrib/forgejo-cli)
+or [Gitea CLI (`tea`)](https://gitea.com/gitea/tea) 0.16 or later on your T3 Code server and
+sign in with `fj --host https://your-server auth add-token` or `tea login add`. A configured
+token takes precedence over CLI logins for its server.
 
 T3 Code prefers a matching `fj` login and falls back to `tea` when `fj` is unavailable
 or has no login for that server. Once an account is selected, failed actions stay on that
