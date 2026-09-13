@@ -57,6 +57,7 @@ import {
   type Icon,
 } from "../Icons";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
+import { ForgejoServersSettings } from "./ForgejoServersSettings";
 import { SourceControlWritingSettingsSection } from "./SourceControlWritingSettings";
 import {
   PolicyTooltip,
@@ -277,6 +278,9 @@ function DiscoveryItemRow({
 
   useEffect(() => {
     if (item.kind === "git" && searchTargetId === searchableSetting("git-fetch-interval").id) {
+      setIsExpanded(true);
+    }
+    if (item.kind === "forgejo" && searchTargetId === searchableSetting("forgejo-servers").id) {
       setIsExpanded(true);
     }
   }, [item.kind, searchTargetId]);
@@ -586,7 +590,9 @@ export function SourceControlSettingsPanel() {
               headerAction={hasVersionControlSystems ? null : scanButton}
             >
               {result.sourceControlProviders.map((item) => (
-                <DiscoveryItemRow key={`provider:${item.kind}`} item={item} />
+                <DiscoveryItemRow key={`provider:${item.kind}`} item={item}>
+                  {item.kind === "forgejo" ? <ForgejoServersSettings /> : undefined}
+                </DiscoveryItemRow>
               ))}
             </SettingsSection>
           ) : null}
