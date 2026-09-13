@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { normalizeForgejoServerUrl } from "./sourceControl.ts";
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
@@ -840,4 +841,27 @@ it("validates remote device hosts and rejects ambiguous host ids", () => {
     decodeDeviceHostSettings({ deviceHosts: [{ ...host, target: "-oProxyCommand=bad" }] }),
   ).toThrow();
   expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, port: 0 }] })).toThrow();
+});
+
+describe("normalizeForgejoServerUrl", () => {
+  it("lower-cases the host and strips a trailing slash", () => {
+    expect(normalizeForgejoServerUrl("HTTPS://Forge.Example.com/")).toBe(
+      "https://forge.example.com",
+    );
+  });
+
+  it("keeps the port and a mount path", () => {
+    expect(normalizeForgejoServerUrl("http://forge.local:3000")).toBe("http://forge.local:3000");
+    expect(normalizeForgejoServerUrl("https://example.com/forgejo/")).toBe(
+      "https://example.com/forgejo",
+    );
+  });
+
+  it("rejects non-http schemes, credentials, blanks, and inner whitespace", () => {
+    expect(normalizeForgejoServerUrl("ssh://git@forge.example.com")).toBeNull();
+    expect(normalizeForgejoServerUrl("https://user:pw@forge.example.com")).toBeNull();
+    expect(normalizeForgejoServerUrl("   ")).toBeNull();
+    expect(normalizeForgejoServerUrl("https://forge.example.com/a b")).toBeNull();
+    expect(normalizeForgejoServerUrl("forge.example.com")).toBeNull();
+  });
 });

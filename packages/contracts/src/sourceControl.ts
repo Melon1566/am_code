@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { VcsDriverKind } from "./vcs.ts";
@@ -11,6 +12,41 @@ export const SourceControlProviderKind = Schema.Literals([
   "unknown",
 ]);
 export type SourceControlProviderKind = typeof SourceControlProviderKind.Type;
+
+/**
+ * Key of one `settings.forgejoServers` entry: scheme, lower-case host with any
+ * port, optional mount path, no trailing slash. Produced by
+ * `normalizeForgejoServerUrl`, so two spellings of one server share a token.
+ */
+export const ForgejoServerUrl = Schema.String.pipe(Schema.brand("ForgejoServerUrl"));
+export type ForgejoServerUrl = typeof ForgejoServerUrl.Type;
+
+export function normalizeForgejoServerUrl(raw: string): ForgejoServerUrl | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || /\s/.test(trimmed)) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) {
+    return null;
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  return ForgejoServerUrl.make(`${url.protocol}//${url.host.toLowerCase()}${path}`);
+}
+
+/**
+ * Access token for one Forgejo or Gitea server. The token travels in settings
+ * like provider environment secrets and is redacted before reaching a client.
+ */
+export const ForgejoServerConfig = Schema.Struct({
+  accessToken: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /** Set by the server for an entry supplied by environment variables; clients never send it. */
+  fromEnvironment: Schema.optionalKey(Schema.Literal(true)),
+});
+export type ForgejoServerConfig = typeof ForgejoServerConfig.Type;
 
 export const SourceControlProviderInfo = Schema.Struct({
   kind: SourceControlProviderKind,

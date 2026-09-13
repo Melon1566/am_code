@@ -10,6 +10,7 @@ import {
   TrimmedString,
 } from "./baseSchemas.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
+import { ForgejoServerConfig, ForgejoServerUrl } from "./sourceControl.ts";
 import { EnvironmentMachineKind, ThreadEnvMode } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
 import {
@@ -1183,6 +1184,11 @@ export const ServerSettings = Schema.Struct({
   usageLimitSources: Schema.Record(UsageLimitSourceId, UsageLimitSourceConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  // Access tokens for Forgejo and Gitea servers, keyed by normalized server
+  // URL. Lets the server talk to a forge without the fj or tea CLIs.
+  forgejoServers: Schema.Record(ForgejoServerUrl, ForgejoServerConfig).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   /** Exact model IDs, applied to past and future usage on this environment. */
   usagePriceOverrides: Schema.Record(TrimmedNonEmptyString, UsageModelPriceOverride).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
@@ -1427,6 +1433,10 @@ export const ServerSettingsPatch = Schema.Struct({
   // echoed back yet. `null` removes; the server merges into its current map.
   usageLimitSources: Schema.optionalKey(
     Schema.Record(UsageLimitSourceId, Schema.NullOr(UsageLimitSourceConfig)),
+  ),
+  // Per entry like `usageLimitSources`; `null` removes one server.
+  forgejoServers: Schema.optionalKey(
+    Schema.Record(ForgejoServerUrl, Schema.NullOr(ForgejoServerConfig)),
   ),
   /** Each entry replaces one model's rates; `null` restores automatic pricing. */
   usagePriceOverrides: Schema.optionalKey(
