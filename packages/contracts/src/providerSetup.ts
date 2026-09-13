@@ -3,8 +3,18 @@ import * as Schema from "effect/Schema";
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
+/**
+ * How a sign-in reaches the user. `browser` opens a URL that finishes on the
+ * host machine; `deviceCode` shows a short code the user enters on any device,
+ * which is the path for phones and remote browsers. Drivers that only have one
+ * method ignore the choice.
+ */
+export const ProviderAuthMethod = Schema.Literals(["browser", "deviceCode"]);
+export type ProviderAuthMethod = typeof ProviderAuthMethod.Type;
+
 export const ProviderSetupInput = Schema.Struct({
   instanceId: ProviderInstanceId,
+  method: Schema.optional(ProviderAuthMethod),
 });
 export type ProviderSetupInput = typeof ProviderSetupInput.Type;
 
@@ -23,6 +33,8 @@ export const ProviderAuthState = Schema.Struct({
   ]),
   flowId: Schema.NullOr(SetupOperationId),
   authorizationUrl: Schema.NullOr(Schema.String),
+  // Device-code sign-ins: the code to enter at `authorizationUrl`.
+  userCode: Schema.optional(Schema.NullOr(Schema.String)),
   expiresAt: Schema.NullOr(IsoDateTime),
   message: Schema.NullOr(Schema.String),
 });
