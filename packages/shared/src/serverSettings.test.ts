@@ -1,4 +1,5 @@
 import {
+  ForgejoServerUrl,
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
   ProviderDriverKind,
@@ -497,6 +498,23 @@ describe("serverSettings helpers", () => {
 
     const removed = applyServerSettingsPatch(added, { usageLimitSources: { [hubA]: null } });
     expect(Object.keys(removed.usageLimitSources)).toEqual([hubB]);
+  });
+
+  it("upserts and removes forgejoServers per entry", () => {
+    const forgeA = ForgejoServerUrl.make("https://forge-a.test");
+    const forgeB = ForgejoServerUrl.make("https://forge-b.test");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      forgejoServers: { [forgeA]: { accessToken: "token-a" } },
+    };
+
+    const added = applyServerSettingsPatch(current, {
+      forgejoServers: { [forgeB]: { accessToken: "token-b" } },
+    });
+    expect(Object.keys(added.forgejoServers)).toEqual([forgeA, forgeB]);
+
+    const removed = applyServerSettingsPatch(added, { forgejoServers: { [forgeA]: null } });
+    expect(removed.forgejoServers).toEqual({ [forgeB]: { accessToken: "token-b" } });
   });
 
   it("replaces and removes individual usage prices without clobbering other models", () => {
