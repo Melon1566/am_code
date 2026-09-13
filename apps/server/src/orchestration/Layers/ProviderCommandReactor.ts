@@ -8,6 +8,7 @@ import {
   type ProjectId,
   type OrchestrationSession,
   ThreadId,
+  type ProviderInstanceId,
   type ProviderSession,
   type RuntimeMode,
   type TurnId,
@@ -51,6 +52,7 @@ import {
 } from "../Services/ProviderCommandReactor.ts";
 import { forkParked, ServerActivation } from "../../serverActivation.ts";
 import { canReplaceThreadTitle, DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
+import { selectPooledInstance } from "../providerAccountPool.ts";
 import {
   resolveSourceControlWriterModelSelection,
   ServerSettingsService,
@@ -665,6 +667,57 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Makes a pooled account swap visible: the thread's persisted selection
+   * follows the account in use so every client's picker agrees, and a thread
+   * whose live session moved gets an activity row saying why.
+   */
+  const recordPooledSwap = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly modelSelection: ModelSelection;
+    readonly persistedInstanceId: ProviderInstanceId;
+    readonly previousLiveInstanceId: ProviderInstanceId | undefined;
+    readonly createdAt: string;
+  }) {
+    if (input.modelSelection.instanceId !== input.persistedInstanceId) {
+      yield* orchestrationEngine.dispatch({
+        type: "thread.meta.update",
+        commandId: yield* serverCommandId("pooled-account-selection"),
+        threadId: input.threadId,
+        modelSelection: input.modelSelection,
+      });
+    }
+    if (
+      input.previousLiveInstanceId === undefined ||
+      input.previousLiveInstanceId === input.modelSelection.instanceId
+    ) {
+      return;
+    }
+    const providers = yield* providerRegistry.getProviders;
+    const label = (instanceId: ProviderInstanceId) =>
+      providers.find((provider) => provider.instanceId === instanceId)?.displayName ??
+      String(instanceId);
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: yield* serverCommandId("pooled-account-switched"),
+      threadId: input.threadId,
+      activity: {
+        id: yield* serverEventId(),
+        tone: "info",
+        kind: "provider.account.switched",
+        summary: `Switched to ${label(input.modelSelection.instanceId)}`,
+        payload: {
+          detail: `${label(input.previousLiveInstanceId)} reached its usage limit.`,
+          fromInstanceId: input.previousLiveInstanceId,
+          toInstanceId: input.modelSelection.instanceId,
+        },
+        turnId: null,
+        createdAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
@@ -708,8 +761,29 @@ const make = Effect.gen(function* () {
       activeSession.providerInstanceId !== undefined
         ? activeSession.providerInstanceId
         : thread.modelSelection.instanceId;
-    const desiredModelSelection = requestedModelSelection ?? thread.modelSelection;
+    const preferredModelSelection = requestedModelSelection ?? thread.modelSelection;
+    // Pooled accounts make the client's instance a preference: a live session
+    // stays on its account until that account runs dry, and a thread without a
+    // session starts on the pooled account with the most quota left.
+    const pooledInstanceId = selectPooledInstance({
+      providers: yield* providerRegistry.getProviders,
+      requestedInstanceId: preferredModelSelection.instanceId,
+      liveInstanceId:
+        activeThreadSession !== null && activeSession !== undefined
+          ? activeSession.providerInstanceId
+          : undefined,
+      now: Date.parse(createdAt),
+    });
+    const pooledSwap = pooledInstanceId !== preferredModelSelection.instanceId;
+    const desiredModelSelection = pooledSwap
+      ? { ...preferredModelSelection, instanceId: pooledInstanceId }
+      : preferredModelSelection;
     const desiredInstanceId = desiredModelSelection.instanceId;
+    // The guards below compare the requested selection with the live session;
+    // after a pooled swap the effective request is the swapped selection.
+    const effectiveRequestedModelSelection = pooledSwap
+      ? desiredModelSelection
+      : requestedModelSelection;
     const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId).pipe(
       Effect.mapError(
         () =>
@@ -772,13 +846,13 @@ const make = Effect.gen(function* () {
                 model: activeSession.model,
               }
             : thread.modelSelection,
-        requestedModelSelection,
+        requestedModelSelection: effectiveRequestedModelSelection,
       });
     }
     if (
       thread.session !== null &&
-      requestedModelSelection !== undefined &&
-      requestedModelSelection.instanceId !== currentInstanceId
+      effectiveRequestedModelSelection !== undefined &&
+      effectiveRequestedModelSelection.instanceId !== currentInstanceId
     ) {
       if (currentInfo.driverKind !== desiredInfo.driverKind) {
         return yield* new ProviderAdapterRequestError({
@@ -863,17 +937,17 @@ const make = Effect.gen(function* () {
       const sessionModelSwitch = (yield* providerService.getCapabilities(desiredInstanceId))
         .sessionModelSwitch;
       const modelChanged =
-        requestedModelSelection !== undefined &&
-        requestedModelSelection.model !== activeSession?.model;
+        effectiveRequestedModelSelection !== undefined &&
+        effectiveRequestedModelSelection.model !== activeSession?.model;
       const instanceChanged =
-        requestedModelSelection !== undefined &&
-        activeSession?.providerInstanceId !== requestedModelSelection.instanceId;
+        effectiveRequestedModelSelection !== undefined &&
+        activeSession?.providerInstanceId !== effectiveRequestedModelSelection.instanceId;
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
       const previousModelSelection = threadModelSelections.get(threadId);
       const shouldRestartForModelSelectionChange =
         preferredProvider === "claudeAgent" &&
-        requestedModelSelection !== undefined &&
-        !Equal.equals(previousModelSelection, requestedModelSelection);
+        effectiveRequestedModelSelection !== undefined &&
+        !Equal.equals(previousModelSelection, effectiveRequestedModelSelection);
 
       if (
         !runtimeModeChanged &&
@@ -920,11 +994,29 @@ const make = Effect.gen(function* () {
         cwd: restartedSession.cwd,
       });
       yield* bindSessionToThread(restartedSession);
+      if (pooledSwap) {
+        yield* recordPooledSwap({
+          threadId,
+          modelSelection: desiredModelSelection,
+          persistedInstanceId: thread.modelSelection.instanceId,
+          previousLiveInstanceId: activeSession?.providerInstanceId,
+          createdAt,
+        });
+      }
       return restartedSession.threadId;
     }
 
     const startedSession = yield* startProviderSession(undefined);
     yield* bindSessionToThread(startedSession);
+    if (pooledSwap) {
+      yield* recordPooledSwap({
+        threadId,
+        modelSelection: desiredModelSelection,
+        persistedInstanceId: thread.modelSelection.instanceId,
+        previousLiveInstanceId: undefined,
+        createdAt,
+      });
+    }
     return startedSession.threadId;
   });
 
