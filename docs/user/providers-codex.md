@@ -49,6 +49,18 @@ reported accounts, refresh provider status, and confirm the second instance has
 its own shadow path and login. A shadow-home conflict usually means the directory
 contains a copied Codex setup. Use a fresh shadow directory and sign in again.
 
+## Balance usage across accounts
+
+Turn on **Balance usage with pooled accounts** for every Codex instance that shares
+a CODEX_HOME path and should share the work. New threads start on the pooled
+account with the most session quota left. A thread stays on its account until that
+account's session or weekly limit runs out. The next message then continues on
+another pooled account, and the thread notes the switch. The model picker shows
+the account in use.
+
+Turn the switch off on an instance to leave it out of the pool. Threads keep the
+account they last used.
+
 ## Answer questions while Codex works
 
 Codex can ask a question and keep working. Answer it in the thread's question
@@ -70,7 +82,8 @@ for command and file approvals.
 When Codex stops on a usage limit, the thread names the window that ran out and
 when it resets, when Codex reports them. Send the message again after the reset. On a workspace plan the
 message also says whether your workspace owner needs to add credits or raise the
-spend limit to continue sooner.
+spend limit to continue sooner. With pooled accounts, sending the message again
+continues on another account that still has quota.
 
 ## Send feedback to OpenAI
 
