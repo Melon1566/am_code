@@ -586,6 +586,15 @@ export const CodexSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    accountPooling: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Balance usage with pooled accounts",
+        description:
+          "Start new threads on the pooled account with the most quota left and move a thread to another pooled account when its own runs out. Pools form across instances that share this CODEX_HOME path.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
     launchArgs: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
@@ -599,7 +608,7 @@ export const CodexSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "shadowHomePath", "accountPooling", "launchArgs"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;

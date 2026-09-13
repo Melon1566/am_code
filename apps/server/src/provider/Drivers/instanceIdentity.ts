@@ -17,6 +17,8 @@ export const withInstanceIdentity =
     readonly displayName: string | undefined;
     readonly accentColor: string | undefined;
     readonly continuationGroupKey: string;
+    /** True when the instance takes part in account pooling with its continuation group. */
+    readonly pooled?: boolean | undefined;
   }) =>
   (snapshot: ServerProviderDraft): ServerProvider => ({
     ...snapshot,
@@ -24,5 +26,8 @@ export const withInstanceIdentity =
     driver: input.driverKind,
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
-    continuation: { groupKey: input.continuationGroupKey },
+    continuation: {
+      groupKey: input.continuationGroupKey,
+      ...(input.pooled === true ? { pooled: true } : {}),
+    },
   });

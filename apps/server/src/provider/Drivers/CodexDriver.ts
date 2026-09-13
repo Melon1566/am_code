@@ -143,6 +143,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         displayName,
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
+        pooled: config.accountPooling,
       });
       yield* materializeCodexShadowHome(homeLayout).pipe(
         Effect.mapError(
