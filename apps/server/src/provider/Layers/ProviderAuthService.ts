@@ -76,7 +76,9 @@ export const makeProviderAuthService = Effect.gen(function* () {
   return ProviderAuthService.of({
     start: Effect.fn("ProviderAuthService.start")(function* (input, ownerSessionId) {
       const auth = yield* getController(input.instanceId, "start");
-      return yield* auth.start(ownerSessionId, stopSessions(input.instanceId));
+      return yield* auth.start(ownerSessionId, stopSessions(input.instanceId), {
+        method: input.method,
+      });
     }),
     complete: Effect.fn("ProviderAuthService.complete")(function* (input, ownerSessionId) {
       const auth = yield* getController(input.instanceId, "complete");

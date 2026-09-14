@@ -272,6 +272,7 @@ export function applyServerSettingsPatch(
     backgroundActivity,
     // Merged per entry below; its `null` removals must not reach deepMerge.
     usageLimitSources: usageLimitSourcesPatch,
+    forgejoServers: forgejoServersPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
@@ -357,6 +358,11 @@ export function applyServerSettingsPatch(
             current.usageLimitSources,
             usageLimitSourcesPatch,
           ),
+        }
+      : {}),
+    ...(forgejoServersPatch !== undefined
+      ? {
+          forgejoServers: mergeSettingsEntries(current.forgejoServers, forgejoServersPatch),
         }
       : {}),
     ...(usagePriceOverridesPatch !== undefined

@@ -10,24 +10,24 @@ A shared Codex home with a shadow home lets work and personal accounts continue
 the same threads. The accounts share Codex sessions and configuration while keeping
 their own login and available models.
 
-Keep your first account in `~/.codex`. On the environment's machine, sign the
-second account into a fresh directory:
+Keep your first account in `~/.codex`. To add another, open **Settings > Providers**,
+choose **Add provider**, pick Codex, and give the instance a name. On the Config step the
+**Shadow home path** is filled in for you, and both instances must share the same
+**CODEX_HOME path**. After **Add instance** the wizard moves to **Sign in**: choose
+**Sign in with ChatGPT** to finish in a browser on the environment's machine, or
+**Use a code instead** to enter a short code from any device, including a phone paired
+to a remote host. T3 Code creates the shadow directory and prepares the shared state;
+do not populate it by copying your whole Codex home.
+
+The same sign-in and **Sign out** controls are on each Codex instance in
+**Settings > Providers**, so you can sign in later or switch the account behind an
+instance.
+
+To sign in from a terminal instead, point Codex at the shadow directory for one login:
 
 ```bash
-mkdir -p ~/.codex_personal
-CODEX_HOME=~/.codex_personal codex login
+CODEX_HOME=~/.codex-t3/codex_personal codex login
 ```
-
-Then add a second Codex instance in **Settings > Providers**:
-
-| Instance       | CODEX_HOME path | Shadow home path    |
-| -------------- | --------------- | ------------------- |
-| Codex Work     | `~/.codex`      | Leave empty         |
-| Codex Personal | `~/.codex`      | `~/.codex_personal` |
-
-Both instances must use the same **CODEX_HOME path**. T3 Code prepares the shared
-state in the shadow directory; do not populate it by copying your whole Codex
-home.
 
 The shadow account needs its own `auth.json` file. If Codex uses an OS credential
 store, configure file storage for this setup. See
@@ -48,6 +48,18 @@ settings. If two instances show the same unexpected account or models, check the
 reported accounts, refresh provider status, and confirm the second instance has
 its own shadow path and login. A shadow-home conflict usually means the directory
 contains a copied Codex setup. Use a fresh shadow directory and sign in again.
+
+## Balance usage across accounts
+
+Turn on **Balance usage with pooled accounts** for every Codex instance that shares
+a CODEX_HOME path and should share the work. New threads start on the pooled
+account with the most session quota left. A thread stays on its account until that
+account's session or weekly limit runs out. The next message then continues on
+another pooled account, and the thread notes the switch. The model picker shows
+the account in use.
+
+Turn the switch off on an instance to leave it out of the pool. Threads keep the
+account they last used.
 
 ## Answer questions while Codex works
 
@@ -70,7 +82,8 @@ for command and file approvals.
 When Codex stops on a usage limit, the thread names the window that ran out and
 when it resets, when Codex reports them. Send the message again after the reset. On a workspace plan the
 message also says whether your workspace owner needs to add credits or raise the
-spend limit to continue sooner.
+spend limit to continue sooner. With pooled accounts, sending the message again
+continues on another account that still has quota.
 
 ## Send feedback to OpenAI
 

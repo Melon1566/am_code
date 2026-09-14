@@ -2,8 +2,10 @@
 
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
 import { CheckIcon } from "lucide-react";
+import { useAtomValue } from "@effect/atom-react";
 import { useMemo, useState } from "react";
 import {
+  defaultInstanceIdForDriver,
   ProviderInstanceId,
   ProviderDriverKind,
   type EnvironmentId,
@@ -13,6 +15,7 @@ import {
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
+import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { Button } from "../ui/button";
 import { ACPRegistryIcon, Gemini, GithubCopilotIcon, PiAgentIcon, type Icon } from "../Icons";
 import { Dialog } from "../ui/dialog";
@@ -25,10 +28,13 @@ import { ProviderSettingsForm, deriveProviderSettingsFields } from "./ProviderSe
 import { WizardPanel, WizardPopup, WizardHeader, WizardFooter } from "../ui/wizard";
 import {
   ADD_PROVIDER_WIZARD_STEPS,
+  addProviderWizardSteps,
+  CONFIG_STEP,
   resolveWizardNavigation,
   type WizardNavigation,
 } from "./AddProviderInstanceDialog.logic";
 import { AddProviderInstanceWizardSteps } from "./AddProviderInstanceWizardSteps";
+import { CodexSignInSection } from "./CodexSignInSection";
 
 const PROVIDER_ACCENT_SWATCHES = [
   "#2563eb",
@@ -135,6 +141,10 @@ export function AddProviderInstanceDialog({
   // Errors are suppressed until the user has tried to submit once. After that
   // they update live so fixing the problem clears the message in place.
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
+  // Set once the instance is saved; the wizard then stays open on Sign in.
+  const [createdInstanceId, setCreatedInstanceId] = useState<ProviderInstanceId | null>(null);
+  const serverProviders =
+    useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
 
   const existingIds = useMemo(
     () => new Set(Object.keys(settings.providerInstances ?? {})),
@@ -150,7 +160,13 @@ export function AddProviderInstanceDialog({
   const instanceIdError = validateInstanceId(instanceId, existingIds);
   const showInstanceIdError = hasAttemptedSubmit && instanceIdError !== null;
   const previewLabel = label.trim() || `${driverOption.label} Workspace`;
-  const wizardStepSummaries = [driverOption.label, previewLabel, null] as const;
+  const wizardSteps = addProviderWizardSteps(driver);
+  const locked = createdInstanceId !== null;
+  const wizardStepSummaries: readonly (string | null)[] = [
+    driverOption.label,
+    previewLabel,
+    ...wizardSteps.slice(CONFIG_STEP).map(() => null),
+  ];
 
   const configDraft = configByDriver[driver] ?? EMPTY_CONFIG_DRAFT;
   const setConfigDraft = (config: Record<string, unknown> | undefined) => {
@@ -165,17 +181,33 @@ export function AddProviderInstanceDialog({
     });
   };
 
+  // A second Codex account gets its own shadow home by default so the wizard
+  // can sign it in without the user inventing a path. Applied when the Config
+  // step opens; clearing the field afterwards sticks until the step reopens.
+  const applyCodexShadowDefault = () => {
+    if (driver !== "codex" || instanceId === defaultInstanceIdForDriver(driver)) return;
+    setConfigByDriver((existing) => {
+      const current = existing[driver] ?? {};
+      if (current.shadowHomePath !== undefined) return existing;
+      return { ...existing, [driver]: { ...current, shadowHomePath: `~/.codex-t3/${instanceId}` } };
+    });
+  };
+
   const applyWizardNavigation = (navigation: WizardNavigation) => {
     if (navigation.kind === "blocked") {
       setHasAttemptedSubmit(true);
+    }
+    if (navigation.kind === "navigate" && navigation.step === CONFIG_STEP) {
+      applyCodexShadowDefault();
     }
     setWizardStep(navigation.step);
   };
 
   const navigateToStep = (requestedStep: number) => {
     applyWizardNavigation(
-      resolveWizardNavigation(wizardStep, requestedStep, ADD_PROVIDER_WIZARD_STEPS.length, {
+      resolveWizardNavigation(wizardStep, requestedStep, wizardSteps.length, {
         instanceIdError,
+        locked,
       }),
     );
   };
@@ -211,6 +243,11 @@ export function AddProviderInstanceDialog({
         title: "Provider instance added",
         description: `${driverOption.label} instance '${instanceId}' was added.`,
       });
+      if (wizardSteps.length > ADD_PROVIDER_WIZARD_STEPS.length) {
+        setCreatedInstanceId(brandedId);
+        setWizardStep(CONFIG_STEP + 1);
+        return;
+      }
       onOpenChange(false);
     } catch (error) {
       toastManager.add({
@@ -234,9 +271,11 @@ export function AddProviderInstanceDialog({
           }
         >
           <AddProviderInstanceWizardSteps
+            steps={wizardSteps}
             currentStep={wizardStep}
             summaries={wizardStepSummaries}
             instanceIdError={instanceIdError}
+            locked={locked}
             onNavigation={applyWizardNavigation}
           />
         </WizardHeader>
@@ -383,7 +422,7 @@ export function AddProviderInstanceDialog({
           </div>
 
           {driverSettingsFields.length > 0 ? (
-            <div className={cn("grid gap-4", wizardStep !== 2 && "hidden")}>
+            <div className={cn("grid gap-4", wizardStep !== CONFIG_STEP && "hidden")}>
               <ProviderSettingsForm
                 definition={driverOption}
                 value={configDraft}
@@ -392,32 +431,55 @@ export function AddProviderInstanceDialog({
                 onChange={setConfigDraft}
               />
             </div>
-          ) : wizardStep === 2 ? (
+          ) : wizardStep === CONFIG_STEP ? (
             <div className="grid gap-2">
               <p className="text-sm text-muted-foreground">
                 This driver has no required configuration. You can add the instance now.
               </p>
             </div>
           ) : null}
+
+          {createdInstanceId !== null ? (
+            <div className={cn("grid gap-2", wizardStep !== CONFIG_STEP + 1 && "hidden")}>
+              <CodexSignInSection
+                environmentId={environmentId}
+                environmentLabel={environmentLabel}
+                instanceId={createdInstanceId}
+                provider={serverProviders.find(
+                  (provider) => provider.instanceId === createdInstanceId,
+                )}
+                readOnly={false}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                You can also sign in later from the instance in Settings → Providers.
+              </p>
+            </div>
+          ) : null}
         </WizardPanel>
 
         <WizardFooter>
-          <Button
-            variant="outline"
-            onClick={() => {
-              if (wizardStep === 0) {
-                onOpenChange(false);
-                return;
-              }
-              setWizardStep((step) => Math.max(0, step - 1));
-            }}
-          >
-            {wizardStep === 0 ? "Cancel" : "Back"}
-          </Button>
-          {wizardStep < ADD_PROVIDER_WIZARD_STEPS.length - 1 ? (
-            <Button onClick={() => navigateToStep(wizardStep + 1)}>Next</Button>
+          {locked ? (
+            <Button onClick={() => onOpenChange(false)}>Done</Button>
           ) : (
-            <Button onClick={handleSave}>Add instance</Button>
+            <>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (wizardStep === 0) {
+                    onOpenChange(false);
+                    return;
+                  }
+                  setWizardStep((step) => Math.max(0, step - 1));
+                }}
+              >
+                {wizardStep === 0 ? "Cancel" : "Back"}
+              </Button>
+              {wizardStep < CONFIG_STEP ? (
+                <Button onClick={() => navigateToStep(wizardStep + 1)}>Next</Button>
+              ) : (
+                <Button onClick={handleSave}>Add instance</Button>
+              )}
+            </>
           )}
         </WizardFooter>
       </WizardPopup>

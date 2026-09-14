@@ -11,6 +11,8 @@
  * @module ServerSettings
  */
 import {
+  type ForgejoServerConfig,
+  normalizeForgejoServerUrl,
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -37,6 +39,7 @@ import * as Equal from "effect/Equal";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Config from "effect/Config";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -150,6 +153,19 @@ function usageLimitSourceSecretName(sourceId: string): string {
   return `usage-limit-source-${Buffer.from(sourceId, "utf8").toString("base64url")}`;
 }
 
+function forgejoServerSecretName(url: string): string {
+  return `forgejo-token-${Buffer.from(url, "utf8").toString("base64url")}`;
+}
+
+/**
+ * One Forgejo server may come from the environment instead of settings. It is
+ * materialized into the settings consumers see, but never written to disk.
+ */
+const ForgejoEnvironmentServerConfig = Config.all({
+  url: Config.string("T3CODE_FORGEJO_URL").pipe(Config.option),
+  accessToken: Config.string("T3CODE_FORGEJO_ACCESS_TOKEN").pipe(Config.option),
+});
+
 function redactProviderEnvironmentVariable(
   variable: ProviderInstanceEnvironmentVariable,
 ): ProviderInstanceEnvironmentVariable {
@@ -186,7 +202,17 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
       },
     ]),
   );
-  return { ...settings, providerInstances, usageLimitSources };
+  // Forgejo tokens are bearer secrets too; keep only whether one is set.
+  const forgejoServers = Object.fromEntries(
+    Object.entries(settings.forgejoServers).map(([url, server]) => [
+      url,
+      {
+        ...server,
+        accessToken: server.accessToken.length > 0 ? USAGE_LIMIT_SOURCE_KEY_REDACTED : "",
+      },
+    ]),
+  );
+  return { ...settings, providerInstances, usageLimitSources, forgejoServers };
 }
 
 export class ServerSettingsService extends Context.Service<
@@ -497,6 +523,17 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
+  const forgejoEnvironment = yield* ForgejoEnvironmentServerConfig.pipe(
+    Effect.map(({ url, accessToken }) => {
+      if (Option.isNone(url) || Option.isNone(accessToken)) return Option.none();
+      const normalized = normalizeForgejoServerUrl(url.value);
+      const token = accessToken.value.trim();
+      return normalized === null || token.length === 0
+        ? Option.none()
+        : Option.some({ url: normalized, accessToken: token });
+    }),
+    Effect.orElseSucceed(() => Option.none<{ url: string; accessToken: string }>()),
+  );
   const sql = yield* SqlClient.SqlClient;
   const writeSemaphore = yield* Semaphore.make(1);
   const cacheKey = "settings" as const;
@@ -709,10 +746,35 @@ const make = Effect.gen(function* () {
           managementKey: Option.isSome(secret) ? textDecoder.decode(secret.value) : "",
         };
       }
+      const forgejoServers: Record<string, ForgejoServerConfig> = {};
+      for (const [url, server] of Object.entries(settings.forgejoServers)) {
+        if (server.accessToken !== USAGE_LIMIT_SOURCE_KEY_REDACTED) {
+          forgejoServers[url] = server;
+          continue;
+        }
+        const secret = yield* secretStore
+          .get(forgejoServerSecretName(url))
+          .pipe(
+            Effect.mapError(
+              (cause) => new ServerSettingsError({ settingsPath, operation: "read-secret", cause }),
+            ),
+          );
+        forgejoServers[url] = {
+          ...server,
+          accessToken: Option.isSome(secret) ? textDecoder.decode(secret.value) : "",
+        };
+      }
+      if (Option.isSome(forgejoEnvironment) && !(forgejoEnvironment.value.url in forgejoServers)) {
+        forgejoServers[forgejoEnvironment.value.url] = {
+          accessToken: forgejoEnvironment.value.accessToken,
+          fromEnvironment: true,
+        };
+      }
       return {
         ...settings,
         providerInstances: providerInstances as ServerSettings["providerInstances"],
         usageLimitSources: usageLimitSources as ServerSettings["usageLimitSources"],
+        forgejoServers: forgejoServers as ServerSettings["forgejoServers"],
       };
     });
 
@@ -881,10 +943,54 @@ const make = Effect.gen(function* () {
           );
       }
 
+      const forgejoServers: Record<string, ForgejoServerConfig> = {};
+      for (const [url, server] of Object.entries(next.forgejoServers)) {
+        const secretName = forgejoServerSecretName(url);
+        // The environment marker never persists; a client echoing it back keeps
+        // nothing, since the token lives in the process environment.
+        const { fromEnvironment: _environment, ...stored } = server;
+        if (stored.accessToken === USAGE_LIMIT_SOURCE_KEY_REDACTED) {
+          if (url in current.forgejoServers) forgejoServers[url] = stored;
+          continue;
+        }
+        if (stored.accessToken.length === 0) {
+          yield* secretStore
+            .remove(secretName)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ServerSettingsError({ settingsPath, operation: "remove-secret", cause }),
+              ),
+            );
+          continue;
+        }
+        yield* secretStore
+          .set(secretName, textEncoder.encode(stored.accessToken))
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ServerSettingsError({ settingsPath, operation: "write-secret", cause }),
+            ),
+          );
+        forgejoServers[url] = { ...stored, accessToken: USAGE_LIMIT_SOURCE_KEY_REDACTED };
+      }
+      for (const url of Object.keys(current.forgejoServers)) {
+        if (url in forgejoServers) continue;
+        yield* secretStore
+          .remove(forgejoServerSecretName(url))
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ServerSettingsError({ settingsPath, operation: "remove-stale-secret", cause }),
+            ),
+          );
+      }
+
       return {
         ...next,
         providerInstances: providerInstances as ServerSettings["providerInstances"],
         usageLimitSources: usageLimitSources as ServerSettings["usageLimitSources"],
+        forgejoServers: forgejoServers as ServerSettings["forgejoServers"],
       };
     });
 

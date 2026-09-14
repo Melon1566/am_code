@@ -156,6 +156,7 @@ import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
 import * as GitLabCli from "./sourceControl/GitLabCli.ts";
 import * as ForgejoCli from "./sourceControl/ForgejoCli.ts";
+import * as ForgejoServerTokens from "./sourceControl/ForgejoServerTokens.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
@@ -3114,6 +3115,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     });
     const pullRequests = yield* PullRequestService.PullRequestService;
     const sql = yield* SqlClient.SqlClient;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3165,7 +3167,18 @@ export const websocketRpcRouteLayer = Layer.unwrap(
                           BitbucketApi.layer,
                           GitHubCli.layer,
                           GitLabCli.layer,
-                          ForgejoCli.layer,
+                          ForgejoCli.layer.pipe(
+                            Layer.provide(
+                              ForgejoServerTokens.layer.pipe(
+                                Layer.provide(
+                                  Layer.succeed(
+                                    ServerSettings.ServerSettingsService,
+                                    serverSettings,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                       Layer.provideMerge(GitVcsDriver.layer),

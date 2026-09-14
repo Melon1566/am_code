@@ -1,4 +1,9 @@
-import type { ProviderAuthState, ProviderInstanceId, ProviderSetupError } from "@t3tools/contracts";
+import type {
+  ProviderAuthMethod,
+  ProviderAuthState,
+  ProviderInstanceId,
+  ProviderSetupError,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -7,6 +12,7 @@ export interface ProviderAuthController {
   readonly start: (
     ownerSessionId: string,
     stopSessions?: Effect.Effect<void, ProviderSetupError>,
+    options?: { readonly method?: ProviderAuthMethod | undefined },
   ) => Effect.Effect<ProviderAuthState, ProviderSetupError>;
   readonly complete: (
     ownerSessionId: string,
@@ -30,7 +36,7 @@ interface ProviderAuthTarget {
 
 export interface ProviderAuthServiceShape {
   readonly start: (
-    input: ProviderAuthTarget,
+    input: ProviderAuthTarget & { readonly method?: ProviderAuthMethod | undefined },
     ownerSessionId: string,
   ) => Effect.Effect<ProviderAuthState, ProviderSetupError>;
   readonly complete: (

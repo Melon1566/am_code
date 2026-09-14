@@ -571,6 +571,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "forgejo-servers",
+    title: "Forgejo and Gitea servers",
+    to: "/settings/source-control",
+    searchTerms: ["forgejo gitea codeberg access token server api credentials fj tea"],
+    environmentOnly: true,
+    scope: "environment-defaults",
+  },
+  {
     id: "git-fetch-interval",
     title: "Git fetch interval",
     to: "/settings/source-control",

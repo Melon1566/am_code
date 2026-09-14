@@ -145,6 +145,9 @@ export type ServerProviderAvailability = typeof ServerProviderAvailability.Type;
 
 export const ServerProviderContinuation = Schema.Struct({
   groupKey: TrimmedNonEmptyString,
+  // Set when the instance opted into account pooling: the server may serve a
+  // thread on any pooled instance sharing this group key.
+  pooled: Schema.optional(Schema.Boolean),
 });
 export type ServerProviderContinuation = typeof ServerProviderContinuation.Type;
 

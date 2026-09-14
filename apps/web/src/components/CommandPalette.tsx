@@ -43,6 +43,7 @@ import * as Option from "effect/Option";
 import {
   ArrowLeftIcon,
   CornerLeftUpIcon,
+  FileDiffIcon,
   FileSearchIcon,
   FolderIcon,
   FolderPlusIcon,
@@ -1693,6 +1694,21 @@ function OpenCommandPaletteDialog(props: {
       icon: <LinkIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "thread.copyReference",
       run: copyActiveThreadReference,
+    });
+  }
+
+  if (activeThread !== null) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:diff-panel",
+      searchTerms: ["diff", "changes", "review", "working tree", "edits", "panel"],
+      title: "Toggle diff panel",
+      icon: <FileDiffIcon className={ITEM_ICON_CLASS} />,
+      shortcutCommand: "diff.toggle",
+      run: async () => {
+        useRightPanelStore.getState().toggle(threadRef, "diff");
+      },
     });
   }
 

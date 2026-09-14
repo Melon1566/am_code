@@ -1,10 +1,12 @@
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import { SourceControlProviderError } from "@t3tools/contracts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ForgejoCli from "./ForgejoCli.ts";
+import { ForgejoServerTokens } from "./ForgejoServerTokens.ts";
 import * as SourceControlProvider from "./SourceControlProvider.ts";
 import {
   providerAuth,
@@ -58,6 +60,8 @@ export const makeDiscovery = Effect.gen(function* () {
   const process = yield* VcsProcess.VcsProcess;
   const listLogins = cli.listLogins;
   if (!listLogins) return discovery;
+  // Optional, like in the client: absent means only fj and tea logins count.
+  const tokens = yield* Effect.serviceOption(ForgejoServerTokens);
   return {
     type: "managed-cli",
     kind: "forgejo",
@@ -78,9 +82,52 @@ export const makeDiscovery = Effect.gen(function* () {
           Effect.map((result) => result.stdout.trim()),
           Effect.orElseSucceed(() => ""),
         );
+      const remote = ForgejoCli.parseForgejoRemote(remoteUrl);
+      // An access token from Settings or the environment needs no CLI at all.
+      const configured = Option.isSome(tokens) ? yield* tokens.value.list : [];
+      const configuredLogins = configured.map((server) => ({
+        name: server.url,
+        url: server.url,
+        user: "",
+        default: configured.length === 1 ? "true" : "false",
+        valid: "true",
+      }));
+      const configuredLogin = remote
+        ? ForgejoCli.matchForgejoLogin(configuredLogins, remote)
+        : configured.length === 1
+          ? configuredLogins[0]
+          : undefined;
+      const configuredServer = configured.find((server) => server.url === configuredLogin?.url);
+      if (configuredServer) {
+        const source = configuredServer.fromEnvironment ? "the environment" : "Settings";
+        const host = ForgejoCli.parseForgejoRemote(configuredServer.url)?.host;
+        const account = cli.getAccount
+          ? yield* cli.getAccount({ cwd, baseUrl: configuredServer.url }).pipe(Effect.result)
+          : undefined;
+        return {
+          kind: "forgejo" as const,
+          label: discovery.label,
+          status: "available" as const,
+          version: Option.none(),
+          installHint: discovery.installHint,
+          detail: Option.none(),
+          auth:
+            account !== undefined && Result.isSuccess(account)
+              ? providerAuth({
+                  status: "authenticated",
+                  account: account.success,
+                  host,
+                  detail: `Using the access token from ${source}.`,
+                })
+              : providerAuth({
+                  status: "unauthenticated",
+                  host,
+                  detail: `The access token from ${source} was rejected. Check the token and its scopes.`,
+                }),
+        };
+      }
       const credentials = yield* Effect.result(listLogins({ cwd, command: "fj", remoteUrl }));
       const logins = Result.isSuccess(credentials) ? credentials.success : [];
-      const remote = ForgejoCli.parseForgejoRemote(remoteUrl);
       const login =
         (remote && ForgejoCli.matchForgejoLogin(logins, remote)) ||
         logins.find((entry) => entry.default === "true") ||
@@ -322,8 +369,9 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const repo = yield* cli.resolveRepository(input);
         const pull = yield* getPull(input);
-        if (repo.command === "fj") {
-          // fj checkout cannot target a repository outside the local remotes.
+        if (repo.command !== "tea") {
+          // fj checkout cannot target a repository outside the local remotes,
+          // and a token has no checkout command at all.
           const urls = yield* request(
             { ...input, path: repositoryPath(repo.repository) },
             RepositorySchema,

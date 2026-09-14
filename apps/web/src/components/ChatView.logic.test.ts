@@ -59,6 +59,7 @@ import {
   restorePlanFollowUpComposer,
   resolveComposerProviderSelection,
   resolveDraftPromotionNavigationTarget,
+  observeLiveTurnDiff,
   observeProactivePanelUserChoice,
   resolveProactiveTurnDiffAction,
   resolveThreadMetadataUpdateForNextTurn,
@@ -2446,5 +2447,86 @@ describe("restorePlanFollowUpComposer", () => {
       prompt: "Follow up on the plan",
       detectTrigger: true,
     });
+  });
+});
+
+describe("observeLiveTurnDiff", () => {
+  const turn = TurnId.make("turn-live-1");
+  const nextTurn = TurnId.make("turn-live-2");
+
+  it("does nothing while no turn is running", () => {
+    const result = observeLiveTurnDiff(null, {
+      runningTurnId: null,
+      mutationId: "m1",
+      userActionRevision: 3,
+    });
+    expect(result.open).toBe(false);
+    expect(result.next.turnId).toBeNull();
+  });
+
+  it("opens once on the first workspace mutation of a turn, then stays quiet", () => {
+    const started = observeLiveTurnDiff(null, {
+      runningTurnId: turn,
+      mutationId: "m1",
+      userActionRevision: 3,
+    });
+    expect(started.open).toBe(false);
+
+    const sameMutation = observeLiveTurnDiff(started.next, {
+      runningTurnId: turn,
+      mutationId: "m1",
+      userActionRevision: 4,
+    });
+    expect(sameMutation.open).toBe(false);
+
+    const firstEdit = observeLiveTurnDiff(sameMutation.next, {
+      runningTurnId: turn,
+      mutationId: "m2",
+      userActionRevision: 4,
+    });
+    expect(firstEdit.open).toBe(true);
+    // The revision captured when the turn began is what gates the proactive open.
+    expect(firstEdit.next.userActionRevision).toBe(3);
+
+    const secondEdit = observeLiveTurnDiff(firstEdit.next, {
+      runningTurnId: turn,
+      mutationId: "m3",
+      userActionRevision: 4,
+    });
+    expect(secondEdit.open).toBe(false);
+  });
+
+  it("treats a new turn as a fresh chance to open", () => {
+    const opened = observeLiveTurnDiff(
+      { turnId: turn, mutationIdAtStart: "m1", opened: true, userActionRevision: 1 },
+      { runningTurnId: nextTurn, mutationId: "m3", userActionRevision: 7 },
+    );
+    expect(opened.open).toBe(false);
+    expect(opened.next).toEqual({
+      turnId: nextTurn,
+      mutationIdAtStart: "m3",
+      opened: false,
+      userActionRevision: 7,
+    });
+    const edited = observeLiveTurnDiff(opened.next, {
+      runningTurnId: nextTurn,
+      mutationId: "m4",
+      userActionRevision: 7,
+    });
+    expect(edited.open).toBe(true);
+  });
+
+  it("ignores a mutation id that is still unknown", () => {
+    const started = observeLiveTurnDiff(null, {
+      runningTurnId: turn,
+      mutationId: null,
+      userActionRevision: 0,
+    });
+    const stillNull = observeLiveTurnDiff(started.next, {
+      runningTurnId: turn,
+      mutationId: null,
+      userActionRevision: 0,
+    });
+    expect(stillNull.open).toBe(false);
   });
 });

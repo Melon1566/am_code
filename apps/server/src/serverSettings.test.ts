@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   DEFAULT_SERVER_SETTINGS,
+  ForgejoServerUrl,
   ModelSelection,
   ProjectId,
   ProjectScript,
@@ -12,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as FileSystem from "effect/FileSystem";
@@ -229,6 +231,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         binaryPath: "/opt/homebrew/bin/codex",
         homePath: "/Users/julius/.codex",
         shadowHomePath: "",
+        accountPooling: false,
         launchArgs: "",
         customModels: [],
       });
@@ -938,6 +941,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         binaryPath: "/opt/homebrew/bin/codex",
         homePath: "",
         shadowHomePath: "",
+        accountPooling: false,
         launchArgs: "",
         customModels: [],
       });
@@ -1391,4 +1395,86 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       assert.equal(yield* fileSystem.readFileString(serverConfig.settingsPath), broken);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
+
+  it.effect("stores Forgejo access tokens as secrets and redacts them for clients", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+        const url = ForgejoServerUrl.make("https://forge.test");
+        const marker = "\u2022\u2022\u2022\u2022\u2022\u2022";
+
+        const stored = yield* serverSettings.updateSettings({
+          forgejoServers: { [url]: { accessToken: "secret-token" } },
+        });
+        assert.deepStrictEqual(stored.forgejoServers, { [url]: { accessToken: "secret-token" } });
+        const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+        assert.ok(!raw.includes("secret-token"), "token must not be written to settings.json");
+        assert.deepStrictEqual(
+          ServerSettingsModule.redactServerSettingsForClient(stored).forgejoServers,
+          { [url]: { accessToken: marker } },
+        );
+
+        const kept = yield* serverSettings.updateSettings({
+          forgejoServers: { [url]: { accessToken: marker } },
+        });
+        assert.equal(kept.forgejoServers[url]?.accessToken, "secret-token");
+
+        const removed = yield* serverSettings.updateSettings({ forgejoServers: { [url]: null } });
+        assert.deepStrictEqual(removed.forgejoServers, {});
+        const secretFiles = yield* fileSystem.readDirectory(serverConfig.secretsDir);
+        assert.ok(!secretFiles.some((name) => name.startsWith("forgejo-token-")));
+      }),
+    ).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("materializes an environment Forgejo server until a stored entry overrides it", () => {
+    const environment = ConfigProvider.layer(
+      ConfigProvider.fromUnknown({
+        T3CODE_FORGEJO_URL: "HTTPS://Forge.Env.Test/",
+        T3CODE_FORGEJO_ACCESS_TOKEN: "env-token",
+      }),
+    );
+    const url = ForgejoServerUrl.make("https://forge.env.test");
+    const marker = "\u2022\u2022\u2022\u2022\u2022\u2022";
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+
+        const initial = yield* serverSettings.getSettings;
+        assert.deepStrictEqual(initial.forgejoServers, {
+          [url]: { accessToken: "env-token", fromEnvironment: true },
+        });
+        assert.deepStrictEqual(
+          ServerSettingsModule.redactServerSettingsForClient(initial).forgejoServers,
+          { [url]: { accessToken: marker, fromEnvironment: true } },
+        );
+
+        // A client echoing the environment row back persists nothing.
+        const echoed = yield* serverSettings.updateSettings({
+          forgejoServers: { [url]: { accessToken: marker, fromEnvironment: true } },
+        });
+        assert.deepStrictEqual(echoed.forgejoServers, {
+          [url]: { accessToken: "env-token", fromEnvironment: true },
+        });
+        const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+        assert.ok(!raw.includes("forge.env.test"), "environment server must not be persisted");
+
+        const overridden = yield* serverSettings.updateSettings({
+          forgejoServers: { [url]: { accessToken: "stored-token" } },
+        });
+        assert.deepStrictEqual(overridden.forgejoServers, {
+          [url]: { accessToken: "stored-token" },
+        });
+
+        const restored = yield* serverSettings.updateSettings({ forgejoServers: { [url]: null } });
+        assert.deepStrictEqual(restored.forgejoServers, {
+          [url]: { accessToken: "env-token", fromEnvironment: true },
+        });
+      }),
+    ).pipe(Effect.provide(makeServerSettingsLayer().pipe(Layer.provide(environment))));
+  });
 });

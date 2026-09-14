@@ -10,6 +10,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSetupError,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import {
@@ -169,6 +170,7 @@ describe("ProviderCommandReactor", () => {
   async function createHarness(input?: {
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
+    readonly providerSnapshots?: ReadonlyArray<Partial<ServerProvider>>;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
     readonly requiresNewThreadForModelChange?: boolean;
     readonly unreadableHistory?: boolean;
@@ -343,7 +345,7 @@ describe("ProviderCommandReactor", () => {
         }),
       ),
     );
-    const providerSnapshots = [
+    const providerSnapshots = input?.providerSnapshots ?? [
       {
         instanceId: modelSelection.instanceId,
         ...(input?.requiresNewThreadForModelChange === true
@@ -4221,4 +4223,201 @@ describe("ProviderCommandReactor", () => {
       expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
     }),
   );
+
+  describe("account pooling", () => {
+    const later = "2026-01-01T05:00:00.000Z";
+    const pooledCodex = (id: string, sessionUsedPercent: number): Partial<ServerProvider> => ({
+      instanceId: ProviderInstanceId.make(id),
+      driver: ProviderDriverKind.make("codex"),
+      displayName: id,
+      continuation: { groupKey: "codex:home:/shared-codex", pooled: true },
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-01-01T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+      usageLimits: {
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        windows: [
+          {
+            id: "primary",
+            kind: "session",
+            label: "Session",
+            usedPercent: sessionUsedPercent,
+            windowDurationMins: 300,
+            resetsAt: later,
+          },
+        ],
+      },
+    });
+    const codexSelection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    };
+    const turnStart = (threadId: ThreadId, suffix: string) =>
+      ({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-pooled-${suffix}`),
+        threadId,
+        message: {
+          messageId: MessageId.make(`message-pooled-${suffix}`),
+          role: "user",
+          text: "hello",
+          attachments: [],
+        },
+        modelSelection: codexSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }) as const;
+
+    effectIt.effect("starts a new thread on the pooled account with the most quota left", () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            threadModelSelection: codexSelection,
+            providerSnapshots: [pooledCodex("codex", 100), pooledCodex("codex_personal", 10)],
+          }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        yield* harness.engine.dispatch(turnStart(threadId, "start"));
+        yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+        yield* Effect.promise(() => harness.drain());
+
+        expect(harness.startSession).toHaveBeenCalledWith(
+          threadId,
+          expect.objectContaining({
+            providerInstanceId: ProviderInstanceId.make("codex_personal"),
+          }),
+        );
+        const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === threadId,
+        );
+        expect(thread?.modelSelection.instanceId).toBe(ProviderInstanceId.make("codex_personal"));
+        expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_personal"));
+        expect(
+          thread?.activities.some((activity) => activity.kind === "provider.account.switched"),
+        ).toBe(false);
+      }),
+    );
+
+    effectIt.effect("keeps a live session on its account while it has quota", () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            threadModelSelection: codexSelection,
+            providerSnapshots: [pooledCodex("codex", 90), pooledCodex("codex_personal", 0)],
+          }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-pooled-sticky-session"),
+          threadId,
+          session: {
+            threadId,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            providerName: "codex",
+            status: "ready",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        });
+        harness.runtimeSessions.push({
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status: "ready",
+          runtimeMode: "approval-required",
+          threadId,
+          cwd: "/tmp/provider-project",
+          model: "gpt-5-codex",
+          resumeCursor: { threadId: "codex-thread-1" },
+          createdAt,
+          updatedAt: createdAt,
+        });
+        yield* harness.engine.dispatch(turnStart(threadId, "sticky"));
+        yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+        yield* Effect.promise(() => harness.drain());
+
+        expect(harness.startSession).not.toHaveBeenCalled();
+        const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === threadId,
+        );
+        expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex"));
+        expect(thread?.modelSelection.instanceId).toBe(ProviderInstanceId.make("codex"));
+      }),
+    );
+
+    effectIt.effect("moves a live session and records it when its account is exhausted", () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            threadModelSelection: codexSelection,
+            providerSnapshots: [pooledCodex("codex", 100), pooledCodex("codex_personal", 20)],
+          }),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-pooled-live-session"),
+          threadId,
+          session: {
+            threadId,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            providerName: "codex",
+            status: "ready",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        });
+        harness.runtimeSessions.push({
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status: "ready",
+          runtimeMode: "approval-required",
+          threadId,
+          cwd: "/tmp/provider-project",
+          model: "gpt-5-codex",
+          resumeCursor: { threadId: "codex-thread-1" },
+          createdAt,
+          updatedAt: createdAt,
+        });
+        yield* harness.engine.dispatch(turnStart(threadId, "move"));
+        yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+        yield* Effect.promise(() => harness.drain());
+
+        expect(harness.startSession).toHaveBeenCalledWith(
+          threadId,
+          expect.objectContaining({
+            providerInstanceId: ProviderInstanceId.make("codex_personal"),
+            resumeCursor: { threadId: "codex-thread-1" },
+          }),
+        );
+        const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === threadId,
+        );
+        expect(thread?.modelSelection.instanceId).toBe(ProviderInstanceId.make("codex_personal"));
+        expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_personal"));
+        expect(thread?.activities).toContainEqual(
+          expect.objectContaining({
+            kind: "provider.account.switched",
+            tone: "info",
+            summary: "Switched to codex_personal",
+          }),
+        );
+      }),
+    );
+  });
 });
