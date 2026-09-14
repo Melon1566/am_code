@@ -32,7 +32,20 @@ instead can put credentials where this provider will not find them.
 Check the account reported in provider settings after signing in. Existing
 threads can switch only between Claude instances with the same config directory.
 Separate account directories stay isolated, including their local conversation
-state. Claude does not have Codex's shared-home and shadow-home arrangement.
+state.
+
+### Pool several subscriptions
+
+To let T3 Code balance work across subscriptions, give each account its own
+instance that shares one config directory and differs only by token. Run
+`claude setup-token` for each account, then add a Claude instance per account
+with the **CLAUDE_CONFIG_DIR path** left the same and a sensitive
+**Environment variables** entry `CLAUDE_CODE_OAUTH_TOKEN` set to that account's
+token. Turn on **Balance usage with pooled accounts** on every instance in the
+pool. New threads start on the account with the most session quota left; a
+thread stays on its account until its session or weekly limit runs out, then
+the next message continues on another pooled account and the thread notes the
+switch. Turn the switch off on an instance to leave the pool.
 
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.

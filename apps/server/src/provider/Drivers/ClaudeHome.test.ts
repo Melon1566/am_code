@@ -15,13 +15,29 @@ import {
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   describe("Claude home resolution", () => {
-    it.effect("uses the process home when no Claude home override is configured", () =>
+    it.effect("uses Claude's default config directory when no override is configured", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
-        const resolved = path.resolve(NodeOS.homedir());
+        const resolved = path.resolve(NodeOS.homedir(), ".claude");
 
-        expect(yield* resolveClaudeHomePath({ homePath: "" })).toBe(resolved);
+        expect(yield* resolveClaudeHomePath({ homePath: "" }, {})).toBe(resolved);
+        expect(yield* makeClaudeContinuationGroupKey({ homePath: "" })).toBe(
+          `claude:home:${yield* resolveClaudeHomePath({ homePath: "" })}`,
+        );
         expect(yield* makeClaudeEnvironment({ homePath: "" })).toBe(process.env);
+      }),
+    );
+
+    it.effect("keys the default instance on an inherited CLAUDE_CONFIG_DIR", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const resolved = path.resolve(NodeOS.homedir(), ".claude-shared");
+
+        expect(
+          yield* resolveClaudeHomePath({ homePath: "" }, { CLAUDE_CONFIG_DIR: "~/.claude-shared" }),
+        ).toBe(resolved);
+        // An explicit setting for the same directory lands in the same pool.
+        expect(yield* resolveClaudeHomePath({ homePath: "~/.claude-shared" }, {})).toBe(resolved);
       }),
     );
 
@@ -63,9 +79,12 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
     it.effect("keeps continuation compatible across instances with the same Claude HOME", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
-        const resolved = path.resolve(NodeOS.homedir());
+        const resolved = path.resolve(NodeOS.homedir(), ".claude");
 
-        expect(yield* makeClaudeContinuationGroupKey({ homePath: "" })).toBe(
+        expect(yield* makeClaudeContinuationGroupKey({ homePath: "" }, {})).toBe(
+          `claude:home:${resolved}`,
+        );
+        expect(yield* makeClaudeContinuationGroupKey({ homePath: "~/.claude" }, {})).toBe(
           `claude:home:${resolved}`,
         );
       }),
