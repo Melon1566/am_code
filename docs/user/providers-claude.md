@@ -37,12 +37,15 @@ state.
 ### Pool several subscriptions
 
 To let T3 Code balance work across subscriptions, give each account its own
-instance that shares one config directory and differs only by token. Run
-`claude setup-token` for each account, then add a Claude instance per account
-with the **CLAUDE_CONFIG_DIR path** left the same and a sensitive
-**Environment variables** entry `CLAUDE_CODE_OAUTH_TOKEN` set to that account's
-token. Turn on **Balance usage with pooled accounts** on every instance in the
-pool. New threads start on the account with the most session quota left; a
+instance that shares one config directory and differs only by token. Add a
+Claude instance per account in **Settings > Providers** with the
+**CLAUDE_CONFIG_DIR path** left the same. After **Add instance** the wizard moves
+to **Sign in**: choose **Sign in with Claude**, sign in on the page it opens, and
+paste the code Anthropic shows you back into T3 Code. The token is stored on the
+instance as a sensitive `CLAUDE_CODE_OAUTH_TOKEN` environment variable, so you
+can also run `claude setup-token` yourself and add that variable by hand. The
+same controls are on each Claude instance card. Turn on
+**Balance usage with pooled accounts** on every instance in the pool. New threads start on the account with the most session quota left; a
 thread stays on its account until its session or weekly limit runs out, then
 the next message continues on another pooled account and the thread notes the
 switch. Turn the switch off on an instance to leave the pool.

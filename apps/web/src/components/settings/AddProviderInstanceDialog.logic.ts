@@ -10,9 +10,9 @@ export const ADD_PROVIDER_WIZARD_STEPS = ["Driver", "Identity", "Config"] as con
 export const CONFIG_STEP = 2;
 export const SIGN_IN_STEP_LABEL = "Sign in";
 
-/** Codex can sign in from inside the wizard once the instance exists. */
+/** Codex and Claude can sign in from inside the wizard once the instance exists. */
 export function addProviderWizardSteps(driver: ProviderDriverKind): readonly string[] {
-  return driver === "codex"
+  return driver === "codex" || driver === "claudeAgent"
     ? [...ADD_PROVIDER_WIZARD_STEPS, SIGN_IN_STEP_LABEL]
     : ADD_PROVIDER_WIZARD_STEPS;
 }
