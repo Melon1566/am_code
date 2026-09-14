@@ -53,14 +53,16 @@ describe("resolveWizardNavigation", () => {
 });
 
 describe("addProviderWizardSteps", () => {
-  it("adds a sign-in step for Codex only", () => {
-    expect(addProviderWizardSteps(ProviderDriverKind.make("codex"))).toEqual([
-      "Driver",
-      "Identity",
-      "Config",
-      "Sign in",
-    ]);
-    expect(addProviderWizardSteps(ProviderDriverKind.make("claudeAgent"))).toEqual([
+  it("adds a sign-in step for Codex and Claude only", () => {
+    for (const driver of ["codex", "claudeAgent"]) {
+      expect(addProviderWizardSteps(ProviderDriverKind.make(driver))).toEqual([
+        "Driver",
+        "Identity",
+        "Config",
+        "Sign in",
+      ]);
+    }
+    expect(addProviderWizardSteps(ProviderDriverKind.make("cursor"))).toEqual([
       "Driver",
       "Identity",
       "Config",

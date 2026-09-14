@@ -9,12 +9,25 @@ import { expandHomePath } from "../../pathExpansion.ts";
 
 const quotePath = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
+/**
+ * The config directory Claude Code will actually use. An empty setting means
+ * the CLI's own default: an inherited `CLAUDE_CONFIG_DIR`, else `~/.claude`.
+ * Instances that resolve to the same directory share transcripts, so this is
+ * also what keys the continuation group.
+ */
 export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function* (
   config: Pick<ClaudeSettings, "homePath">,
+  baseEnv: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<string, never, Path.Path> {
   const path = yield* Path.Path;
   const homePath = config.homePath.trim();
-  return path.resolve(homePath.length > 0 ? expandHomePath(homePath) : NodeOS.homedir());
+  if (homePath.length > 0) return path.resolve(expandHomePath(homePath));
+  const inherited = baseEnv.CLAUDE_CONFIG_DIR?.trim();
+  return path.resolve(
+    inherited && inherited.length > 0
+      ? expandHomePath(inherited)
+      : path.join(NodeOS.homedir(), ".claude"),
+  );
 });
 
 export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function* (
@@ -38,8 +51,11 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
 });
 
 export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationGroupKey")(
-  function* (config: Pick<ClaudeSettings, "homePath">): Effect.fn.Return<string, never, Path.Path> {
-    const resolvedHomePath = yield* resolveClaudeHomePath(config);
+  function* (
+    config: Pick<ClaudeSettings, "homePath">,
+    baseEnv?: NodeJS.ProcessEnv,
+  ): Effect.fn.Return<string, never, Path.Path> {
+    const resolvedHomePath = yield* resolveClaudeHomePath(config, baseEnv);
     return `claude:home:${resolvedHomePath}`;
   },
 );
@@ -48,8 +64,9 @@ export const makeClaudeCapabilitiesCacheKey = Effect.fn("makeClaudeCapabilitiesC
   function* (
     config: Pick<ClaudeSettings, "binaryPath" | "homePath">,
     cwd?: string,
+    baseEnv?: NodeJS.ProcessEnv,
   ): Effect.fn.Return<string, never, Path.Path> {
-    const resolvedHomePath = yield* resolveClaudeHomePath(config);
+    const resolvedHomePath = yield* resolveClaudeHomePath(config, baseEnv);
     return `${config.binaryPath}\0${resolvedHomePath}\0${cwd ?? ""}`;
   },
 );

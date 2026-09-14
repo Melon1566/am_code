@@ -34,7 +34,7 @@ import {
   type WizardNavigation,
 } from "./AddProviderInstanceDialog.logic";
 import { AddProviderInstanceWizardSteps } from "./AddProviderInstanceWizardSteps";
-import { CodexSignInSection } from "./CodexSignInSection";
+import { ProviderSignInSection } from "./ProviderSignInSection";
 
 const PROVIDER_ACCENT_SWATCHES = [
   "#2563eb",
@@ -441,10 +441,11 @@ export function AddProviderInstanceDialog({
 
           {createdInstanceId !== null ? (
             <div className={cn("grid gap-2", wizardStep !== CONFIG_STEP + 1 && "hidden")}>
-              <CodexSignInSection
+              <ProviderSignInSection
                 environmentId={environmentId}
                 environmentLabel={environmentLabel}
                 instanceId={createdInstanceId}
+                driver={driver}
                 provider={serverProviders.find(
                   (provider) => provider.instanceId === createdInstanceId,
                 )}

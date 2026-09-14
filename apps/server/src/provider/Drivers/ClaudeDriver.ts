@@ -17,6 +17,7 @@ import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -28,6 +29,9 @@ import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import * as PtyAdapter from "../../terminal/PtyAdapter.ts";
+import { CLAUDE_OAUTH_TOKEN_VARIABLE, makeClaudeAuth } from "../ClaudeAuth.ts";
+import { setInstanceEnvironmentVariable } from "../instanceEnvironmentSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
 import { makeClaudeScopedLimitNames } from "../Layers/claudeUsageLimits.ts";
@@ -59,7 +63,11 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
-import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
+import {
+  makeClaudeCapabilitiesCacheKey,
+  makeClaudeContinuationGroupKey,
+  makeClaudeEnvironment,
+} from "./ClaudeHome.ts";
 import { discoverClaudeSkills } from "./ClaudeSkills.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -135,13 +143,26 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           Effect.provideService(Path.Path, path),
         ),
       );
-      const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig);
-      const stampIdentity = withInstanceIdentity({
+      const continuationGroupKey = yield* makeClaudeContinuationGroupKey(
+        effectiveConfig,
+        processEnv,
+      );
+      const stampInstance = withInstanceIdentity({
         instanceId,
         driverKind: DRIVER_KIND,
         displayName,
         accentColor,
         continuationGroupKey,
+        pooled: config.accountPooling,
+      });
+      // Sign-in drives `claude setup-token` in a pty. Optional so test layers
+      // without a PtyAdapter still build instances; the server always has one.
+      const ptyAdapter = yield* Effect.serviceOption(PtyAdapter.PtyAdapter);
+      const stampIdentity = (draft: Parameters<typeof stampInstance>[0]) => ({
+        ...stampInstance(draft),
+        ...(Option.isSome(ptyAdapter)
+          ? { setup: { canAuthenticate: true, canInstall: false } }
+          : {}),
       });
 
       // One per instance: the status probe writes the model-scoped bucket
@@ -171,7 +192,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             Effect.provideService(Path.Path, path),
           ),
       });
-      const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(effectiveConfig, cwd);
+      const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(
+        effectiveConfig,
+        cwd,
+        processEnv,
+      );
 
       // Start the TTL-gated refresh without delaying provider readiness. The
       // next check observes a remote manifest after the background fetch lands.
@@ -243,6 +268,27 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
               Effect.provideService(Path.Path, path),
             );
 
+      const claudeAuth = Option.isSome(ptyAdapter)
+        ? yield* makeClaudeAuth({
+            instanceId,
+            binaryPath: effectiveConfig.binaryPath,
+            cwd,
+            environment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
+            spawn: ptyAdapter.value.spawn,
+            storeToken: (token) =>
+              setInstanceEnvironmentVariable(serverSettings, {
+                instanceId,
+                name: CLAUDE_OAUTH_TOKEN_VARIABLE,
+                value: token,
+              }).pipe(Effect.asVoid),
+            removeToken: setInstanceEnvironmentVariable(serverSettings, {
+              instanceId,
+              name: CLAUDE_OAUTH_TOKEN_VARIABLE,
+              value: null,
+            }),
+          })
+        : undefined;
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -255,6 +301,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         enabled,
         snapshot,
         snapshotForCwd,
+        ...(claudeAuth ? { auth: claudeAuth.controller } : {}),
         adapter,
         textGeneration,
       } satisfies ProviderInstance;
