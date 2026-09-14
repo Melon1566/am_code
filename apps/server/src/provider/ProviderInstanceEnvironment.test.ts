@@ -66,3 +66,28 @@ describe("mergeProviderInstanceEnvironment", () => {
     });
   });
 });
+
+describe("provider proxy environment", () => {
+  it("routes HTTP and streaming traffic through the configured proxy without mutating the host", () => {
+    const base = { PATH: "/bin", https_proxy: "http://old:80", NO_PROXY: "*" };
+    const env = mergeProviderInstanceEnvironment(
+      [{ name: "HTTPS_PROXY", value: "http://other:80", sensitive: false }],
+      base,
+      "https://proxy.example.com:8443",
+    );
+    for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "WS_PROXY", "WSS_PROXY"]) {
+      expect(env[key]).toBe("https://proxy.example.com:8443");
+      expect(env[key.toLowerCase()]).toBe("https://proxy.example.com:8443");
+    }
+    expect(env.NO_PROXY).toBe("localhost,127.0.0.1,::1");
+    expect(env.no_proxy).toBe(env.NO_PROXY);
+    expect(env.PATH).toBe("/bin");
+    expect(base).toEqual({ PATH: "/bin", https_proxy: "http://old:80", NO_PROXY: "*" });
+  });
+
+  it("restores inherited routing when the proxy setting is cleared", () => {
+    const base = { HTTPS_PROXY: "http://inherited:80", NO_PROXY: "internal.example.com" };
+    expect(mergeProviderInstanceEnvironment([], base, "")).toEqual(base);
+    expect(mergeProviderInstanceEnvironment([], base)).toEqual(base);
+  });
+});

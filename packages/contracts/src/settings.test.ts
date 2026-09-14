@@ -7,6 +7,7 @@ import {
   ClientSettingsSchema,
   ClientSettingsPatch,
   ClaudeSettings,
+  CodexSettings,
   DEFAULT_SERVER_SETTINGS,
   resolveProviderInstanceEnabled,
   ServerSettings,
@@ -863,5 +864,31 @@ describe("normalizeForgejoServerUrl", () => {
     expect(normalizeForgejoServerUrl("   ")).toBeNull();
     expect(normalizeForgejoServerUrl("https://forge.example.com/a b")).toBeNull();
     expect(normalizeForgejoServerUrl("forge.example.com")).toBeNull();
+  });
+});
+
+describe("provider HTTP proxy settings", () => {
+  for (const schema of [CodexSettings, ClaudeSettings]) {
+    it.each(["", "http://proxy.example.com:3128", "https://proxy.example.com:8443"])(
+      "accepts and preserves proxy endpoint %s",
+      (proxyUrl) => {
+        const decode = Schema.decodeUnknownSync(schema);
+        expect(decode({ proxyUrl }).proxyUrl).toBe(proxyUrl);
+        expect(decode({}).proxyUrl).toBeUndefined();
+      },
+    );
+    it.each([
+      "proxy.example.com:3128",
+      "socks5://proxy:1080",
+      "https://",
+      "https://proxy/api",
+      "https://user:secret@proxy:443",
+    ])("rejects invalid proxy endpoint %s", (proxyUrl) =>
+      expect(() => Schema.decodeUnknownSync(schema)({ proxyUrl })).toThrow(),
+    );
+  }
+  it("preserves proxy updates and clearing in legacy settings patches", () => {
+    const providers = { codex: { proxyUrl: "http://proxy:3128" }, claudeAgent: { proxyUrl: "" } };
+    expect(decodeServerSettingsPatch({ providers }).providers).toEqual(providers);
   });
 });

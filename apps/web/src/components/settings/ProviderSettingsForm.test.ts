@@ -17,6 +17,7 @@ describe("ProviderSettingsForm helpers", () => {
       "homePath",
       "shadowHomePath",
       "accountPooling",
+      "proxyUrl",
       "launchArgs",
     ]);
   });
@@ -67,6 +68,7 @@ describe("ProviderSettingsForm helpers", () => {
       "binaryPath",
       "homePath",
       "accountPooling",
+      "proxyUrl",
       "autoCompactWindow",
       "launchArgs",
     ]);

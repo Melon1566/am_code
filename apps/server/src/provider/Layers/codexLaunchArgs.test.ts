@@ -57,3 +57,21 @@ describe("codexExecLaunchArgs", () => {
     ]);
   });
 });
+
+it("keeps explicit proxy routing ahead of Codex system proxy discovery for app-server and exec", () => {
+  const args = resolveCodexLaunchArgs(
+    "--strict-config",
+    { T3CODE_CODEX_LAUNCH_ARGS: "--enable respect_system_proxy" },
+    "http://proxy.example.com:3128",
+  );
+  NodeAssert.deepStrictEqual(codexExecLaunchArgs(args), [
+    "--enable",
+    "respect_system_proxy",
+    "--disable",
+    "respect_system_proxy",
+  ]);
+  NodeAssert.deepStrictEqual(codexAppServerArgs(args), [
+    "app-server",
+    ...codexExecLaunchArgs(args),
+  ]);
+});

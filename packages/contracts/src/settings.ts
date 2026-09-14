@@ -551,8 +551,43 @@ function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fields>(
   );
 }
 
+const ProviderProxyUrl = TrimmedString.check(
+  Schema.makeFilter((value) => {
+    if (value === "") return true;
+    const message =
+      "Use an HTTP or HTTPS proxy URL with a host and optional port, without credentials or a path.";
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return message;
+    }
+    return (
+      (/^https?:\/\//.test(value) &&
+        (url.protocol === "http:" || url.protocol === "https:") &&
+        url.hostname !== "" &&
+        url.username === "" &&
+        url.password === "" &&
+        url.pathname === "/" &&
+        url.search === "" &&
+        url.hash === "") ||
+      message
+    );
+  }),
+);
+
+const providerProxySetting = Schema.optionalKey(ProviderProxyUrl).pipe(
+  Schema.annotateKey({
+    title: "HTTP proxy URL",
+    description:
+      "Forward this provider's CLI requests, including sign-in and token refresh, through a proxy. Leave empty to use the environment's network settings.",
+    providerSettingsForm: { placeholder: "http://proxy.example.com:3128", clearWhenEmpty: "omit" },
+  }),
+);
+
 export const CodexSettings = makeProviderSettingsSchema(
   {
+    proxyUrl: providerProxySetting,
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
@@ -609,7 +644,7 @@ export const CodexSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "accountPooling", "launchArgs"],
+    order: ["binaryPath", "homePath", "shadowHomePath", "accountPooling", "proxyUrl", "launchArgs"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;
@@ -621,6 +656,7 @@ const CLAUDE_AUTO_COMPACT_WINDOW_PATTERN = /^(?:|[1-9]\d{5}|1000000)$/;
 
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
+    proxyUrl: providerProxySetting,
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
@@ -681,7 +717,14 @@ export const ClaudeSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "accountPooling", "autoCompactWindow", "launchArgs"],
+    order: [
+      "binaryPath",
+      "homePath",
+      "accountPooling",
+      "proxyUrl",
+      "autoCompactWindow",
+      "launchArgs",
+    ],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -1304,6 +1347,7 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 const CodexSettingsPatch = Schema.Struct({
+  proxyUrl: Schema.optionalKey(ProviderProxyUrl),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),
@@ -1313,6 +1357,7 @@ const CodexSettingsPatch = Schema.Struct({
 });
 
 const ClaudeSettingsPatch = Schema.Struct({
+  proxyUrl: Schema.optionalKey(ProviderProxyUrl),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),

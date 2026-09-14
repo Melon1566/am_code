@@ -135,7 +135,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const modelManifest = yield* ModelManifest.ModelManifest;
-      const processEnv = mergeProviderInstanceEnvironment(environment);
+      const processEnv = mergeProviderInstanceEnvironment(
+        environment,
+        process.env,
+        config.proxyUrl,
+      );
       const homeLayout = yield* resolveCodexHomeLayout(config);
       const continuationIdentity = codexContinuationIdentity(homeLayout);
       const stampInstance = withInstanceIdentity({
@@ -262,7 +266,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
               probeCodexSkillsForCwd({
                 binaryPath: effectiveConfig.binaryPath,
                 homePath: effectiveConfig.homePath,
-                launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+                launchArgs: resolveCodexLaunchArgs(
+                  effectiveConfig.launchArgs,
+                  processEnv,
+                  effectiveConfig.proxyUrl,
+                ),
                 cwd,
                 environment: processEnv,
               }).pipe(
@@ -290,7 +298,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         openClient: withCodexAppServerClient({
           binaryPath: effectiveConfig.binaryPath,
           homePath: effectiveConfig.homePath,
-          launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+          launchArgs: resolveCodexLaunchArgs(
+            effectiveConfig.launchArgs,
+            processEnv,
+            effectiveConfig.proxyUrl,
+          ),
           cwd: process.cwd(),
           environment: processEnv,
         }).pipe(
@@ -330,7 +342,11 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
               const { client } = yield* withCodexAppServerClient({
                 binaryPath: effectiveConfig.binaryPath,
                 homePath: effectiveConfig.homePath,
-                launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+                launchArgs: resolveCodexLaunchArgs(
+                  effectiveConfig.launchArgs,
+                  processEnv,
+                  effectiveConfig.proxyUrl,
+                ),
                 // Account-level request; any directory serves, same as the status probe.
                 cwd: process.cwd(),
                 environment: processEnv,

@@ -99,6 +99,14 @@ instance can have its own environment variables, such as API keys or a custom
 base URL. Mark secret values as sensitive; after saving, T3 Code does not display
 their original values.
 
+For Codex and Claude, set **HTTP proxy URL** on the provider instance to forward
+CLI requests, including token refresh, through an HTTP or HTTPS forward proxy.
+Use an endpoint such as `http://proxy.example.com:3128`, without a path or embedded
+credentials. The proxy must be reachable from the environment running the CLI.
+This setting takes precedence over proxy environment variables and keeps localhost
+connections local. Clear it to restore the environment's network settings.
+Browser sign-in pages still use your browser's own connection.
+
 For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 [Claude](./providers-claude.md), [OpenCode](./providers-opencode.md), and
 [Antigravity](./providers-antigravity.md).
