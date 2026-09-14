@@ -3,6 +3,12 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
+  ProviderTransferBundle,
+  ProviderTransferError,
+  ProviderTransferImportInput,
+  ProviderTransferImportResult,
+} from "./providerTransfer.ts";
+import {
   ProviderAuthCancelInput,
   ProviderAuthCompleteInput,
   ProviderAuthState,
@@ -280,6 +286,8 @@ export const WS_METHODS = {
   // Provider methods
   providerUploadFeedback: "provider.uploadFeedback",
   providerAuthStart: "provider.auth.start",
+  providerExport: "provider.export",
+  providerImport: "provider.import",
   providerConsumeResetCredit: "provider.consumeResetCredit",
   providerAuthComplete: "provider.auth.complete",
   providerAuthCancel: "provider.auth.cancel",
@@ -464,6 +472,16 @@ const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
 });
 
 const ProviderSetupRpcError = Schema.Union([ProviderSetupError, EnvironmentAuthorizationError]);
+
+const WsProviderExportRpc = Rpc.make(WS_METHODS.providerExport, {
+  success: ProviderTransferBundle,
+  error: Schema.Union([ProviderTransferError, EnvironmentAuthorizationError]),
+});
+const WsProviderImportRpc = Rpc.make(WS_METHODS.providerImport, {
+  payload: ProviderTransferImportInput,
+  success: ProviderTransferImportResult,
+  error: Schema.Union([ProviderTransferError, EnvironmentAuthorizationError]),
+});
 
 const WsProviderConsumeResetCreditRpc = Rpc.make(WS_METHODS.providerConsumeResetCredit, {
   payload: ProviderConsumeResetCreditInput,
@@ -1300,6 +1318,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,
   WsProviderAuthStartRpc,
+  WsProviderExportRpc,
+  WsProviderImportRpc,
   WsProviderAuthCompleteRpc,
   WsProviderAuthCancelRpc,
   WsProviderAuthLogoutRpc,

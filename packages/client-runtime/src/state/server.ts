@@ -978,6 +978,14 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input]),
       },
     }),
+    exportProviders: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:export",
+      tag: WS_METHODS.providerExport,
+    }),
+    importProviders: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:import",
+      tag: WS_METHODS.providerImport,
+    }),
     completeProviderAuth: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:provider:auth-complete",
       tag: WS_METHODS.providerAuthComplete,

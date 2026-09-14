@@ -106,6 +106,7 @@ import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import { ProviderAuthService } from "./provider/Services/ProviderAuthService.ts";
+import { makeProviderTransfer } from "./provider/providerTransfer.ts";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
 import { makeProviderInstallation } from "./provider/providerInstallation.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
@@ -558,6 +559,7 @@ const makeWsRpcLayer = (
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const providerTransfer = yield* makeProviderTransfer({ stateDir: config.stateDir });
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
@@ -1915,6 +1917,10 @@ const makeWsRpcLayer = (
             providerAuth.start(input, currentSessionId),
             { "rpc.aggregate": "provider" },
           ),
+        [WS_METHODS.providerExport]: () =>
+          observeRpcEffect(WS_METHODS.providerExport, providerTransfer.exportProviders),
+        [WS_METHODS.providerImport]: (input) =>
+          observeRpcEffect(WS_METHODS.providerImport, providerTransfer.importProviders(input)),
         [WS_METHODS.providerAuthComplete]: (input) =>
           observeRpcEffect(
             WS_METHODS.providerAuthComplete,

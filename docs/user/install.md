@@ -111,6 +111,24 @@ For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 [Claude](./providers-claude.md), [OpenCode](./providers-opencode.md), and
 [Antigravity](./providers-antigravity.md).
 
+### Transfer providers to another machine
+
+In the web or desktop app, open **Settings → Providers**, select the source
+environment, and choose **Export**. On the destination environment, choose
+**Import** and select the downloaded file. Imports add new instances and keep
+existing providers. Install the provider CLIs on the destination first.
+
+The file includes all saved provider configurations, proxy settings, and environment
+secrets, including Claude tokens saved through T3 sign-in. Codex `auth.json` and
+Claude `.credentials.json` logins are included when available. Check the export's
+warnings for keychain-only and other external logins that need signing in again.
+Shell environment variables and external CLI configuration files are not copied.
+
+Codex and Claude receive new credential directories, preserving account pools.
+Review other machine-specific paths and ensure the destination can reach your
+proxy. The export contains **unencrypted credentials**; transfer it privately and
+delete it when finished.
+
 ## Next steps
 
 - [Working with threads](./thread-sidebar.md): start tasks and organize parallel work.

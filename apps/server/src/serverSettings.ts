@@ -230,6 +230,7 @@ export class ServerSettingsService extends Context.Service<
     /** Patch settings and persist. Returns the new full settings object. */
     readonly updateSettings: (
       patch: ServerSettingsPatch,
+      options?: { readonly addProviderInstances?: boolean },
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
     /** Stream of settings change events. */
@@ -267,9 +268,20 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
       start: Effect.void,
       ready: Effect.void,
       getSettings: Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider)),
-      updateSettings: (patch) =>
+      updateSettings: (patch, options) =>
         Ref.get(currentSettingsRef).pipe(
-          Effect.map((currentSettings) => applyServerSettingsPatch(currentSettings, patch)),
+          Effect.flatMap((currentSettings) =>
+            prepareProviderImportPatch(
+              currentSettings,
+              patch,
+              options?.addProviderInstances,
+              "test",
+            ).pipe(
+              Effect.map((resolvedPatch) =>
+                applyServerSettingsPatch(currentSettings, resolvedPatch),
+              ),
+            ),
+          ),
           Effect.flatMap(normalizeServerSettings),
           Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
           Effect.map(resolveTextGenerationProvider),
@@ -281,6 +293,31 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
 
 export const layerTest = (overrides: DeepPartial<ServerSettings> = {}) =>
   Layer.effect(ServerSettingsService, makeTest(overrides));
+
+/** Merge imported instances inside the settings write lock so concurrent edits survive. */
+const prepareProviderImportPatch = (
+  current: ServerSettings,
+  patch: ServerSettingsPatch,
+  addProviderInstances: boolean | undefined,
+  settingsPath: string,
+): Effect.Effect<ServerSettingsPatch, ServerSettingsError> => {
+  if (!addProviderInstances || !patch.providerInstances) return Effect.succeed(patch);
+  if (
+    Object.keys(patch.providerInstances).some((id) => Object.hasOwn(current.providerInstances, id))
+  ) {
+    return Effect.fail(
+      new ServerSettingsError({
+        settingsPath,
+        operation: "write-file",
+        cause: "An imported provider ID is already configured.",
+      }),
+    );
+  }
+  return Effect.succeed({
+    ...patch,
+    providerInstances: { ...current.providerInstances, ...patch.providerInstances },
+  });
+};
 
 const ServerSettingsJson = fromLenientJson(ServerSettings);
 const decodeServerSettingsJsonExit = Schema.decodeUnknownExit(ServerSettingsJson);
@@ -1069,13 +1106,19 @@ const make = Effect.gen(function* () {
       Effect.flatMap(materializeProviderEnvironmentSecrets),
       Effect.map(resolveTextGenerationProvider),
     ),
-    updateSettings: (patch) =>
+    updateSettings: (patch, options) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
           const current = yield* getSettingsFromCache;
+          const resolvedPatch = yield* prepareProviderImportPatch(
+            current,
+            patch,
+            options?.addProviderInstances,
+            settingsPath,
+          );
           const nextPersisted = yield* persistProviderEnvironmentSecrets(
             current,
-            applyServerSettingsPatch(current, patch),
+            applyServerSettingsPatch(current, resolvedPatch),
           );
           const next = yield* normalizeServerSettings(nextPersisted);
           yield* writeSettingsAtomically(next);

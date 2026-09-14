@@ -79,6 +79,7 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
+import { ProviderTransferDialog } from "./ProviderTransferDialog";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { UsageProviderSettings } from "./UsageProviderSettings";
@@ -1009,6 +1010,11 @@ export function EnvironmentProviderSettings({
               </span>
             ) : (
               <>
+                <ProviderTransferDialog
+                  key={environmentId}
+                  environmentId={environmentId}
+                  environmentLabel={environmentLabel}
+                />
                 <Tooltip>
                   <TooltipTrigger
                     render={
