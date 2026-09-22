@@ -4,6 +4,18 @@ For one account, use the default Codex provider with your normal Codex login.
 [Provider setup](./install.md#providers) covers installation, Settings > Providers,
 and custom binaries or environment variables.
 
+## Recover interrupted work
+
+If Codex exits unexpectedly during a turn, or a turn fails because of a temporary
+connection or server error, T3 Code automatically resumes the saved conversation
+and continues working. The activity feed shows recovery attempts. You can leave
+the client disconnected; recovery runs on the machine hosting T3 Code.
+
+Recovery retries after 5, 15, 30, 60, and 120 seconds. A completed turn resets this
+limit. **Stop** cancels pending recovery. Authentication, permission, quota, and
+context-limit errors need your attention, as does a conversation that cannot be
+restored. After recovery runs out of attempts, send a message to try again.
+
 ## Use multiple accounts
 
 A shared Codex home with a shadow home lets work and personal accounts continue

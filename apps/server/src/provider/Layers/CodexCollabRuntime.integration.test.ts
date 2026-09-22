@@ -20,10 +20,13 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { ChildProcessSpawner } from "effect/unstable/process";
 import { assert, describe } from "vite-plus/test";
 
 import wireFixture from "../testFixtures/codexMultiAgentWire.json" with { type: "json" };
 import { makeCodexSessionRuntime } from "./CodexSessionRuntime.ts";
+import { makeRecoveringCodexSessionRuntime } from "./CodexSessionRecovery.ts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 const ROOT = wireFixture.rootThreadId;
@@ -166,6 +169,128 @@ const peerPath = NodePath.join(
 );
 
 describe("CodexSessionRuntime collab integration", () => {
+  it.effect("replaces a killed process and continues the same native thread unattended", () =>
+    Effect.gen(function* () {
+      NodeFS.writeFileSync(
+        scriptPath,
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        JSON.stringify({
+          rootThreadId: ROOT,
+          notifications: [],
+          holdTurnOpen: true,
+          recordRequests: true,
+          recordTurnStarts: true,
+        }),
+      );
+      NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          NodeFS.rmSync(scriptPath, { force: true });
+          NodeFS.rmSync(`${scriptPath}.requests`, { force: true });
+        }),
+      );
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const spawned = yield* Deferred.make<ChildProcessSpawner.ChildProcessHandle>();
+      const firstTurn = yield* Deferred.make<void>();
+      const recovering = yield* Deferred.make<void>();
+      const continued = yield* Deferred.make<void>();
+      const runtime = yield* makeRecoveringCodexSessionRuntime({
+        threadId: ThreadId.make("signal-recovery"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
+          ...spawner,
+          spawn: (command) =>
+            spawner.spawn(command).pipe(Effect.tap((handle) => Deferred.succeed(spawned, handle))),
+        }),
+      );
+      let startedTurns = 0;
+      yield* runtime.events.pipe(
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            if (event.method === "process/stderr" && event.message?.includes("attempt 1/5")) {
+              yield* Deferred.succeed(recovering, undefined);
+            }
+            if (event.method === "turn/started") {
+              startedTurns += 1;
+              yield* Deferred.succeed(startedTurns === 1 ? firstTurn : continued, undefined);
+            }
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "Keep working" });
+      yield* Deferred.await(firstTurn);
+      yield* (yield* Deferred.await(spawned)).kill({ killSignal: "SIGKILL" });
+      yield* Deferred.await(recovering);
+      yield* TestClock.adjust("5 seconds");
+      yield* Deferred.await(continued);
+      const requests = readRecordedRequests();
+      const resumed = requests.filter((request) => request.method === "thread/resume");
+      assert.equal(resumed.length, 1);
+      assert.equal(resumed[0]!.params.threadId, ROOT);
+      const turns = requests.filter((request) => request.method === "turn/start");
+      assert.equal(turns.length, 2);
+      assert.deepEqual(turns[1]!.params.input, []);
+      assert.deepEqual((yield* runtime.getSession).resumeCursor, { threadId: ROOT });
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("publishes a session exit when its app-server is killed by a signal", () =>
+    Effect.gen(function* () {
+      NodeFS.writeFileSync(
+        scriptPath,
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        JSON.stringify({
+          rootThreadId: ROOT,
+          notifications: [],
+          holdTurnOpen: true,
+        }),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(scriptPath, { force: true })),
+      );
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const spawned = yield* Deferred.make<ChildProcessSpawner.ChildProcessHandle>();
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("signal-exit"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, {
+          ...spawner,
+          spawn: (command) =>
+            spawner.spawn(command).pipe(Effect.tap((handle) => Deferred.succeed(spawned, handle))),
+        }),
+      );
+      const exited = yield* runtime.events.pipe(
+        Stream.filter((event) => event.method === "session/exited"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "Keep working" });
+      const child = yield* Deferred.await(spawned);
+      // The handle belongs to this test's peer; never find a live Codex PID by name.
+      yield* child.kill({ killSignal: "SIGKILL" });
+      const exitEvents = yield* Fiber.join(exited);
+      assert.match(exitEvents[0]!.message!, /SIGKILL|exited with code/);
+      const session = yield* runtime.getSession;
+      assert.equal(session.status, "error");
+      assert.isUndefined(session.activeTurnId);
+      assert.deepEqual(session.resumeCursor, { threadId: ROOT });
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("looks up child model metadata once after activity registration", () =>
     Effect.gen(function* () {
       const script = {
