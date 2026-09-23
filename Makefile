@@ -1,42 +1,58 @@
-# Local macOS build helpers for this fork. Upstream build docs live in
-# docs/operations/development.md; this file only wraps them so the packaged
-# app can be rebuilt and launched from release/ without remembering flags.
+# Local macOS helpers for this fork. Upstream build docs live in
+# docs/operations/development.md; this file wraps the packaged-app rebuild and
+# the provider proxy tunnel so neither needs its flags remembered.
 #
-#   make app       rebuild release/T3 Code (Alpha).app from the current tree
-#   make open      launch the built app (quit the installed T3 Code first)
-#   make run       app + open
-#   make snapshot  back up ~/.t3/userdata/state.sqlite before a risky upgrade
-#   make clean     remove build artifacts in release/
+#   make app             rebuild release/T3 Code (Alpha).app from the current tree
+#   make open            launch the built app (quit the installed T3 Code first)
+#   make run             app + open
+#   make sign            re-sign the built app with a local Apple identity
+#   make snapshot        back up ~/.t3/userdata/state.sqlite before a risky upgrade
+#   make clean           remove build artifacts in release/
+#   make proxy           check the provider proxy tunnel end to end
+#   make proxy-restart   reconnect the tunnel now
+#   make proxy-stop      stop the tunnel until you log in again
+#   make proxy-shell     open a shell on the proxy instance over SSM
 
 SHELL := /bin/bash
 ARCH ?= arm64
-RUST_TARGET := aarch64-apple-darwin
 
 # The repo needs Node 24+; the shell default here is an older nvm install.
 # Recipes call node by absolute path: GNU make execs simple commands with its
 # own PATH, so the export below only reaches programs the build spawns.
 NODE_BIN ?= /opt/homebrew/opt/node/bin
 export PATH := $(NODE_BIN):$(CURDIR)/node_modules/.bin:$(PATH)
-# Rust is not installed, so the resource-monitor helper is borrowed from the
-# installed release build instead of compiled. Set to 0 to compile it.
-export T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR ?= 1
+
+# Apple signing credentials are CI-only secrets, so a local build is ad-hoc
+# signed. Endpoint security tools read an unsigned process that walks the
+# process table (the resource monitor) and then reaches the network as an
+# attack and kill it, so re-sign with whatever Apple identity is on this
+# machine. Override with SIGN_IDENTITY to pick a specific one.
+SIGN_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -1)
 
 APP_NAME := T3 Code (Alpha).app
 APP := release/$(APP_NAME)
-INSTALLED_APP := /Applications/$(APP_NAME)
-MONITOR_SRC := $(INSTALLED_APP)/Contents/Resources/resource-monitor/t3-resource-monitor
-MONITOR_DST := native/resource-monitor/target/$(RUST_TARGET)/release/t3-resource-monitor
 
-.PHONY: help app open run monitor snapshot clean
+# Codex and Claude reach their endpoints through a proxy on an EC2 box, over an
+# SSM port forward that two launchd agents keep up. SSM addresses the instance
+# by id, so neither its public IP nor this machine's egress IP appears here.
+# The server side lives in tools/proxy-server; these targets only drive the
+# local end. A successful /healthz proves the whole chain, not just the socket.
+PROXY_INSTANCE ?= i-0fc83454343129a90
+PROXY_PORT ?= 3128
+PROXY_AGENTS := com.t3.proxy-tunnel com.t3.proxy-keepalive
+LAUNCHD_DOMAIN := gui/$(shell id -u)
+
+.PHONY: help app open run sign snapshot clean proxy proxy-restart proxy-stop proxy-shell
 
 help:
-	@sed -n '5,9p' $(MAKEFILE_LIST) | sed 's/^#   //'
+	@sed -n '5,14p' $(MAKEFILE_LIST) | sed 's/^#   //'
 
-app: monitor node_modules .env
+app: node_modules .env
 	$(NODE_BIN)/node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch $(ARCH)
 	rm -rf "$(APP)"
 	cd release && unzip -q -o "$$(ls -t T3-Code-*-$(ARCH).zip | head -1)"
 	@xattr -dr com.apple.quarantine "$(APP)" 2>/dev/null || true
+	@$(MAKE) --no-print-directory sign
 	@echo "Built $(APP)"
 
 open:
@@ -48,17 +64,67 @@ open:
 
 run: app open
 
-# Stage the prebuilt helper only when reuse is on and nothing is staged yet.
-monitor:
-	@if [ "$(T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR)" = "1" ] && [ ! -f "$(MONITOR_DST)" ]; then \
-		if [ ! -f "$(MONITOR_SRC)" ]; then \
-			echo "No resource monitor to reuse at $(MONITOR_SRC). Install Rust or set T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR=0."; \
-			exit 1; \
-		fi; \
-		mkdir -p "$(dir $(MONITOR_DST))"; \
-		cp "$(MONITOR_SRC)" "$(MONITOR_DST)"; \
-		chmod +x "$(MONITOR_DST)"; \
-	fi
+# codesign --deep skips Mach-O files outside the nested-code locations it knows
+# about, which is where the resource monitor and the unpacked node addons live.
+# Signing every binary deepest-first covers them, then --deep reseals the
+# bundles over the results. Hardened runtime stays off: it would require the
+# full Electron entitlement set and buys nothing for a local run.
+sign:
+	@if [ -z "$(SIGN_IDENTITY)" ]; then \
+		echo "No Apple Development identity in the keychain; leaving $(APP) ad-hoc signed."; \
+		exit 0; \
+	fi; \
+	if [ ! -d "$(APP)" ]; then \
+		echo "No app at $(APP). Run make app first."; \
+		exit 1; \
+	fi; \
+	echo "Signing $(APP) as $(SIGN_IDENTITY)"; \
+	find "$(APP)" -type f | while IFS= read -r candidate; do \
+		file -b "$$candidate" | grep -q Mach-O || continue; \
+		printf '%s\t%s\n' "$$(printf '%s' "$$candidate" | tr -cd / | wc -c)" "$$candidate"; \
+	done | sort -rn | cut -f2- | while IFS= read -r binary; do \
+		codesign --force --sign "$(SIGN_IDENTITY)" "$$binary" >/dev/null 2>&1 \
+			|| echo "warning: could not sign $$binary"; \
+	done; \
+	codesign --force --deep --sign "$(SIGN_IDENTITY)" "$(APP)" >/dev/null; \
+	codesign --verify --deep --strict "$(APP)" && echo "Signed $(APP)"
+
+proxy:
+	@printf '%-12s' 'health:'; \
+	curl -sf --max-time 10 http://127.0.0.1:$(PROXY_PORT)/healthz >/dev/null \
+		&& echo 'ok (proxy reachable on localhost:$(PROXY_PORT))' \
+		|| echo 'DOWN'
+	@printf '%-12s' 'tunnel:'; \
+	launchctl print $(LAUNCHD_DOMAIN)/com.t3.proxy-tunnel 2>/dev/null \
+		| sed -n 's/^[[:space:]]*state = //p' | head -1 | grep . || echo 'not loaded'
+	@# The keepalive fires on an interval, so it is idle between runs by design;
+	@# only whether it is scheduled tells you anything.
+	@printf '%-12s' 'keepalive:'; \
+	launchctl print $(LAUNCHD_DOMAIN)/com.t3.proxy-keepalive >/dev/null 2>&1 \
+		&& echo 'scheduled' || echo 'not loaded'
+	@printf '%-12s' 'instance:'; \
+	aws ssm describe-instance-information --filters 'Key=InstanceIds,Values=$(PROXY_INSTANCE)' \
+		--query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || echo 'unknown'
+
+proxy-stop:
+	@for agent in $(PROXY_AGENTS); do \
+		launchctl bootout $(LAUNCHD_DOMAIN)/$$agent 2>/dev/null || true; \
+	done; \
+	echo 'Tunnel stopped. It returns at next login, or with make proxy-restart.'
+
+# Session Manager needs a moment to open the forward before a health check means
+# anything, so report status only after it has had time to connect.
+proxy-restart: proxy-stop
+	@for agent in $(PROXY_AGENTS); do \
+		launchctl bootstrap $(LAUNCHD_DOMAIN) "$(HOME)/Library/LaunchAgents/$$agent.plist"; \
+	done
+	@sleep 15
+	@$(MAKE) --no-print-directory proxy
+
+# The AWS CLI shells out to session-manager-plugin by name, and it is installed
+# under ~/.local/bin rather than a system path.
+proxy-shell:
+	@PATH="$(HOME)/.local/bin:$$PATH" aws ssm start-session --target $(PROXY_INSTANCE)
 
 node_modules:
 	$(NODE_BIN)/npx -y pnpm@11.10.0 install
