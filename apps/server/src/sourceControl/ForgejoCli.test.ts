@@ -5,8 +5,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
-import { FetchHttpClient } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { FetchHttpClient } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ForgejoCli from "./ForgejoCli.ts";
@@ -75,9 +75,9 @@ it.effect("uses a configured access token ahead of fj and tea", () => {
     assert.strictEqual(account, "maria");
   }).pipe(
     Effect.provideService(FetchHttpClient.Fetch, makeFetch(requests)),
-    Effect.provide(FetchHttpClient.layer),
     Effect.provide(
       Layer.mergeAll(
+        FetchHttpClient.layer,
         noKeysFile,
         noCliProcess,
         tokensFor([
@@ -96,9 +96,9 @@ it.effect("falls through to the CLI path when no configured server matches the r
     assert.strictEqual(result.failure.reason, "missing-cli");
   }).pipe(
     Effect.provideService(FetchHttpClient.Fetch, makeFetch([])),
-    Effect.provide(FetchHttpClient.layer),
     Effect.provide(
       Layer.mergeAll(
+        FetchHttpClient.layer,
         noKeysFile,
         noCliProcess,
         tokensFor([
@@ -117,7 +117,6 @@ it.effect("behaves as before when the tokens service is absent", () =>
     assert.strictEqual(result.failure.reason, "missing-cli");
   }).pipe(
     Effect.provideService(FetchHttpClient.Fetch, makeFetch([])),
-    Effect.provide(FetchHttpClient.layer),
-    Effect.provide(Layer.mergeAll(noKeysFile, noCliProcess)),
+    Effect.provide(Layer.mergeAll(FetchHttpClient.layer, noKeysFile, noCliProcess)),
   ),
 );

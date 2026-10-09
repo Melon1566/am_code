@@ -12,14 +12,13 @@ import {
   type ProviderInstanceEnvironmentVariable,
   type ProviderInstanceId,
 } from "@t3tools/contracts";
-import type * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
 import type { ServerSettingsService } from "../serverSettings.ts";
 
 type SettingsAccess = Pick<
-  Context.Service.Shape<typeof ServerSettingsService>,
-  "getSettings" | "updateSettings"
+  ServerSettingsService["Service"],
+  "getSettings" | "updateProviderInstance"
 >;
 
 /**
@@ -32,11 +31,13 @@ export const setInstanceEnvironmentVariable = (
     readonly instanceId: ProviderInstanceId;
     readonly name: string;
     readonly value: string | null;
+    readonly defaultInstance?: ProviderInstanceConfig;
   },
 ): Effect.Effect<boolean, ProviderSetupError> =>
   Effect.gen(function* () {
     const current = yield* settings.getSettings;
-    const instance = current.providerInstances[input.instanceId];
+    const configured = current.providerInstances[input.instanceId];
+    const instance = configured ?? input.defaultInstance;
     if (instance === undefined) {
       return yield* new ProviderSetupError({
         instanceId: input.instanceId,
@@ -61,18 +62,21 @@ export const setInstanceEnvironmentVariable = (
       ...(environment.length > 0 ? { environment } : {}),
     };
     if (environment.length === 0) delete (nextInstance as { environment?: unknown }).environment;
-    yield* settings.updateSettings({
-      providerInstances: { ...current.providerInstances, [input.instanceId]: nextInstance },
+    yield* settings.updateProviderInstance({
+      operation: configured ? "upsert" : "create",
+      instanceId: input.instanceId,
+      instance: nextInstance,
     });
     return true;
   }).pipe(
-    Effect.catchTag("ServerSettingsError", (cause) =>
-      Effect.fail(
-        new ProviderSetupError({
-          instanceId: input.instanceId,
-          operation: input.value === null ? "logout" : "start",
-          detail: `Could not save the instance's credentials: ${cause.operation}.`,
-        }),
-      ),
-    ),
+    Effect.catchTags({
+      ServerSettingsError: (cause) =>
+        Effect.fail(
+          new ProviderSetupError({
+            instanceId: input.instanceId,
+            operation: input.value === null ? "logout" : "start",
+            detail: `Could not save the instance's credentials: ${cause.operation}.`,
+          }),
+        ),
+    }),
   );

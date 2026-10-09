@@ -1,8 +1,29 @@
 # Codex
 
-For one account, use the default Codex provider with your normal Codex login.
-[Provider setup](./install.md#providers) covers installation, Settings > Providers,
-and custom binaries or environment variables.
+Use your ChatGPT plan or an existing Codex CLI login to code in T3 Code.
+
+## Connect with ChatGPT
+
+Connect during onboarding or in **Settings → Providers**. For a remote machine,
+select that environment first. T3 Code handles Codex installation; sign in on
+OpenAI and allow sharing of your ChatGPT plan.
+
+Manage shared usage and credits in ChatGPT through **Manage usage** in T3 Code.
+If a request uses a feature that ChatGPT sharing does not support, use another
+provider for that request.
+
+When reconnecting, choose the same account in T3 Code and on OpenAI's sign-in
+page. Disconnecting stops running threads but keeps their history and lets you
+reconnect later.
+
+If remote sign-in cannot return automatically, paste the full URL from the final
+localhost page into the sign-in panel, even if that page could not load.
+
+## Use an existing Codex login
+
+T3 Code can use your installed Codex and its existing login. Run `codex login`
+on the environment's machine to sign in. [Provider setup](./install.md#providers)
+covers installation and custom configuration.
 
 ## Recover interrupted work
 
@@ -18,21 +39,28 @@ restored. After recovery runs out of attempts, send a message to try again.
 
 ## Use multiple accounts
 
+Add another ChatGPT account in **Settings → Providers**, then select the account
+from the thread's model picker. Compatible accounts can continue the same thread.
+Connecting accounts through T3 Code leaves your CLI login unchanged.
+
+### Multiple CLI logins
+
 A shared Codex home with a shadow home lets work and personal accounts continue
 the same threads. The accounts share Codex sessions and configuration while keeping
 their own login and available models.
 
-Keep your first account in `~/.codex`. To add another, open **Settings > Providers**,
-choose **Add provider**, pick Codex, and give the instance a name. On the Config step the
-**Shadow home path** is filled in for you, and both instances must share the same
-**CODEX_HOME path**. After **Add instance** the wizard moves to **Sign in**: choose
-**Sign in with ChatGPT** to finish in a browser on the environment's machine, or
-**Use a code instead** to enter a short code from any device, including a phone paired
-to a remote host. T3 Code creates the shadow directory and prepares the shared state;
-do not populate it by copying your whole Codex home.
+Keep your first account in `~/.codex`. In **Settings → Providers**, add another
+Codex instance using an existing CLI login. Keep the same **CODEX_HOME path** and
+give the new account its own **Shadow home path**. T3 Code creates the shadow
+directory and prepares the shared state; do not populate it by copying your
+whole Codex home.
+
+Sign in from the wizard or provider settings. For a remote host, select
+**ChatGPT with device code** under **Sign-in method** to enter a short code from
+any device without needing a browser on the host.
 
 The same sign-in and **Sign out** controls are on each Codex instance in
-**Settings > Providers**, so you can sign in later or switch the account behind an
+**Settings → Providers**, so you can sign in later or switch the account behind an
 instance.
 
 To sign in from a terminal instead, point Codex at the shadow directory for one login:

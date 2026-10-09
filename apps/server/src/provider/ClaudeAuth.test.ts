@@ -1,6 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { ProviderInstanceId, ProviderSetupError, type ProviderAuthState } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  ProviderDriverKind,
+  ProviderSetupError,
+  type ProviderAuthState,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -8,7 +13,9 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import type { PtyExitEvent, PtyProcess } from "../terminal/PtyAdapter.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { makeClaudeAuth, type ClaudeAuth } from "./ClaudeAuth.ts";
+import { setInstanceEnvironmentVariable } from "./instanceEnvironmentSettings.ts";
 import {
   findClaudeAuthorizationUrl,
   findClaudeSetupToken,
@@ -21,6 +28,7 @@ const otherOwner = "t3-session-other";
 const authUrl =
   "https://platform.claude.com/oauth/authorize?code=true&client_id=abc&scope=user%3Ainference";
 const token = `sk-ant-oat01-${"x".repeat(40)}`;
+const isProviderSetupError = Schema.is(ProviderSetupError);
 
 describe("claudeSetupTokenOutput", () => {
   it("strips terminal escapes and finds the sign-in URL across chunks", () => {
@@ -203,8 +211,76 @@ it.layer(NodeServices.layer)("ClaudeAuth", (it) => {
       const withoutToken = yield* makeHarness();
       const result = yield* withoutToken.auth.controller.logout(Effect.void).pipe(Effect.result);
       assert.ok(Result.isFailure(result));
-      assert.ok(Schema.is(ProviderSetupError)(result.failure));
+      assert.ok(isProviderSetupError(result.failure));
       assert.ok(result.failure.detail.includes("claude auth logout"));
     }),
+  );
+});
+
+it.layer(NodeServices.layer)("Claude account credentials", (it) => {
+  it.effect("saves an implicit default instance's sign-in as a sensitive environment token", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const defaultId = ProviderInstanceId.make("claudeAgent");
+      yield* setInstanceEnvironmentVariable(settings, {
+        instanceId: defaultId,
+        name: "CLAUDE_CODE_OAUTH_TOKEN",
+        value: token,
+        defaultInstance: { driver: ProviderDriverKind.make("claudeAgent") },
+      });
+      assert.deepStrictEqual(
+        (yield* settings.getSettings).providerInstances[defaultId]?.environment,
+        [{ name: "CLAUDE_CODE_OAUTH_TOKEN", value: token, sensitive: true }],
+      );
+    }).pipe(Effect.provide(ServerSettings.layerTest())),
+  );
+
+  it.effect("preserves concurrent changes to other instances when saving a sign-in", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const otherId = ProviderInstanceId.make("claude-work");
+      yield* setInstanceEnvironmentVariable(
+        {
+          ...settings,
+          updateProviderInstance: (mutation) =>
+            settings
+              .updateProviderInstance({
+                operation: "create",
+                instanceId: otherId,
+                instance: { driver: ProviderDriverKind.make("claudeAgent"), displayName: "Work" },
+              })
+              .pipe(Effect.andThen(settings.updateProviderInstance(mutation))),
+        },
+        {
+          instanceId,
+          name: "CLAUDE_CODE_OAUTH_TOKEN",
+          value: token,
+        },
+      );
+      const saved = yield* settings.getSettings;
+      assert.strictEqual(saved.providerInstances[otherId]?.displayName, "Work");
+      assert.strictEqual(saved.providerInstances[instanceId]?.environment?.[0]?.value, token);
+    }).pipe(
+      Effect.provide(
+        ServerSettings.layerTest({
+          providerInstances: {
+            [instanceId]: { driver: ProviderDriverKind.make("claudeAgent") },
+          },
+        }),
+      ),
+    ),
+  );
+
+  it.effect("does not recreate a removed custom instance while saving credentials", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const result = yield* setInstanceEnvironmentVariable(settings, {
+        instanceId,
+        name: "CLAUDE_CODE_OAUTH_TOKEN",
+        value: token,
+      }).pipe(Effect.result);
+      assert.ok(Result.isFailure(result));
+      assert.strictEqual((yield* settings.getSettings).providerInstances[instanceId], undefined);
+    }).pipe(Effect.provide(ServerSettings.layerTest())),
   );
 });

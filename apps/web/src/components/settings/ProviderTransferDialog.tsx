@@ -1,4 +1,5 @@
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { useAtomValue } from "@effect/atom-react";
 import {
   ProviderTransferBundle,
   PROVIDER_TRANSFER_MAX_BYTES,
@@ -29,6 +30,8 @@ export function ProviderTransferDialog({
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
 }) {
+  const canExport = useAtomValue(serverEnvironment.exportProviders.permissionAtom(environmentId));
+  const canImport = useAtomValue(serverEnvironment.importProviders.permissionAtom(environmentId));
   const exportProviders = useAtomCommand(serverEnvironment.exportProviders, {
     reportFailure: false,
   });
@@ -50,7 +53,7 @@ export function ProviderTransferDialog({
   }
 
   async function prepareExport() {
-    if (pending.current) return;
+    if (pending.current || !canExport) return;
     pending.current = true;
     open("export");
     setBusy(true);
@@ -73,6 +76,7 @@ export function ProviderTransferDialog({
   }
 
   async function readFile(file: File | undefined) {
+    if (pending.current || !canImport) return;
     setBundle(null);
     setError(null);
     if (!file) return;
@@ -83,7 +87,7 @@ export function ProviderTransferDialog({
         setError("Choose a provider export smaller than 4 MB.");
         return;
       }
-      setBundle(Schema.decodeUnknownSync(bundleJson)(await file.text()));
+      setBundle(Schema.decodeSync(bundleJson)(await file.text()));
     } catch {
       setError("This is not a supported T3 provider export file.");
     } finally {
@@ -105,7 +109,7 @@ export function ProviderTransferDialog({
   }
 
   async function importBundle() {
-    if (!bundle || pending.current) return;
+    if (!bundle || pending.current || !canImport) return;
     pending.current = true;
     setBusy(true);
     setError(null);
@@ -137,7 +141,7 @@ export function ProviderTransferDialog({
       <Button
         size="xs"
         variant="ghost-muted"
-        disabled={busy}
+        disabled={busy || !canImport}
         onClick={() => open("import")}
         aria-label="Import providers"
       >
@@ -147,7 +151,7 @@ export function ProviderTransferDialog({
       <Button
         size="xs"
         variant="ghost-muted"
-        disabled={busy}
+        disabled={busy || !canExport}
         onClick={() => void prepareExport()}
         aria-label="Export providers"
       >
@@ -172,64 +176,66 @@ export function ProviderTransferDialog({
                 : `Add provider configurations and credentials to ${environmentLabel}. Existing providers are kept.`}
             </DialogDescription>
           </DialogHeader>
-          <DialogPanel className="space-y-4 text-sm">
-            <p className="text-muted-foreground">
-              Export files contain unencrypted API keys and login tokens. Keep the file private and
-              delete it after transferring it to your other machine.
-            </p>
-            {mode === "import" && !success && (
-              <label className="block space-y-2">
-                <span>Provider export file</span>
-                <input
-                  className="block w-full text-sm"
-                  type="file"
-                  accept=".json,application/json"
-                  disabled={busy}
-                  onChange={(event) => void readFile(event.target.files?.[0])}
-                />
-              </label>
-            )}
-            {busy && (
-              <p role="status">
-                {mode === "export" ? "Preparing export…" : "Reading or importing providers…"}
+          <DialogPanel>
+            <div className="space-y-4 text-sm">
+              <p className="text-muted-foreground">
+                Export files contain unencrypted API keys and login tokens. Keep the file private
+                and delete it after transferring it to your other machine.
               </p>
-            )}
-            {bundle && (
-              <>
-                <p>{bundle.instances.length} provider configurations</p>
-                <ul className="max-h-40 space-y-1 overflow-y-auto text-muted-foreground">
-                  {bundle.instances.map((entry) => (
-                    <li key={entry.id}>
-                      {entry.instance.displayName ?? entry.id}{" "}
-                      <span className="text-xs">({entry.instance.driver})</span>
-                    </li>
-                  ))}
-                </ul>
-                {bundle.warnings.length > 0 && (
-                  <div className="space-y-2 rounded-md border border-border p-3">
-                    <p className="font-medium">Credentials to check</p>
-                    <ul className="space-y-2 text-xs text-muted-foreground">
-                      {[...new Set(bundle.warnings)].map((warning) => (
-                        <li key={warning}>{warning}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {mode === "import" && (
-                  <p className="text-xs text-muted-foreground">
-                    Codex and Claude receive new credential directories on this machine. Their CLI
-                    binaries must be installed. Review any other machine-specific paths before
-                    starting a thread.
-                  </p>
-                )}
-              </>
-            )}
-            {error && (
-              <p role="alert" className="text-destructive">
-                {error}
-              </p>
-            )}
-            {success && <p role="status">{success}</p>}
+              {mode === "import" && !success && (
+                <label className="block space-y-2">
+                  <span>Provider export file</span>
+                  <input
+                    className="block w-full text-sm"
+                    type="file"
+                    accept=".json,application/json"
+                    disabled={busy || !canImport}
+                    onChange={(event) => void readFile(event.target.files?.[0])}
+                  />
+                </label>
+              )}
+              {busy && (
+                <p role="status">
+                  {mode === "export" ? "Preparing export…" : "Reading or importing providers…"}
+                </p>
+              )}
+              {bundle && (
+                <>
+                  <p>{bundle.instances.length} provider configurations</p>
+                  <ul className="max-h-40 space-y-1 overflow-y-auto text-muted-foreground">
+                    {bundle.instances.map((entry) => (
+                      <li key={entry.id}>
+                        {entry.instance.displayName ?? entry.id}{" "}
+                        <span className="text-xs">({entry.instance.driver})</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {bundle.warnings.length > 0 && (
+                    <div className="space-y-2 rounded-md border border-border p-3">
+                      <p className="font-medium">Credentials to check</p>
+                      <ul className="space-y-2 text-xs text-muted-foreground">
+                        {[...new Set(bundle.warnings)].map((warning) => (
+                          <li key={warning}>{warning}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {mode === "import" && (
+                    <p className="text-xs text-muted-foreground">
+                      Codex and Claude receive new credential directories on this machine. Their CLI
+                      binaries must be installed. Review any other machine-specific paths before
+                      starting a thread.
+                    </p>
+                  )}
+                </>
+              )}
+              {error && (
+                <p role="alert" className="text-destructive">
+                  {error}
+                </p>
+              )}
+              {success && <p role="status">{success}</p>}
+            </div>
           </DialogPanel>
           <DialogFooter>
             <Button
@@ -244,7 +250,7 @@ export function ProviderTransferDialog({
             </Button>
             {bundle && (
               <Button
-                disabled={busy}
+                disabled={busy || (mode === "export" ? !canExport : !canImport)}
                 onClick={mode === "export" ? download : () => void importBundle()}
               >
                 {mode === "export" ? "Download export" : "Import providers"}

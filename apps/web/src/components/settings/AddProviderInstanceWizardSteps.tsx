@@ -1,34 +1,46 @@
 import { WizardSteps } from "../ui/wizard";
-import { resolveWizardNavigation, type WizardNavigation } from "./AddProviderInstanceDialog.logic";
+import {
+  ADD_PROVIDER_WIZARD_STEPS,
+  resolveWizardNavigation,
+  type WizardNavigation,
+} from "./AddProviderInstanceDialog.logic";
 
 interface AddProviderInstanceWizardStepsProps {
-  readonly steps: readonly string[];
   readonly currentStep: number;
   readonly summaries: readonly (string | null)[];
   readonly instanceIdError: string | null;
-  /** True once the instance exists; earlier steps can no longer be revisited. */
-  readonly locked: boolean;
+  readonly steps?: readonly string[];
+  readonly identityStep?: number;
+  readonly prerequisite?: {
+    readonly step: number;
+    readonly error: string | null;
+  };
   readonly onNavigation: (navigation: WizardNavigation) => void;
+  readonly disabled?: boolean;
 }
 
 export function AddProviderInstanceWizardSteps({
-  steps,
   currentStep,
   summaries,
   instanceIdError,
-  locked,
+  steps = ADD_PROVIDER_WIZARD_STEPS,
+  identityStep,
+  prerequisite,
   onNavigation,
+  disabled = false,
 }: AddProviderInstanceWizardStepsProps) {
   return (
     <WizardSteps
       steps={steps}
       currentStep={currentStep}
       summaries={summaries}
+      isStepDisabled={() => disabled}
       onStepChange={(requestedStep) =>
         onNavigation(
           resolveWizardNavigation(currentStep, requestedStep, steps.length, {
             instanceIdError,
-            locked,
+            ...(identityStep === undefined ? {} : { identityStep }),
+            ...(prerequisite === undefined ? {} : { prerequisite }),
           }),
         )
       }

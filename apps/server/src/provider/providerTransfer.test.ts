@@ -13,6 +13,71 @@ import { makeProviderTransfer } from "./providerTransfer.ts";
 const decodeBundle = Schema.decodeUnknownEffect(ProviderTransferBundle);
 
 it.layer(NodeServices.layer)("provider transfer", (it) => {
+  it.effect("does not export native CLI credentials for a T3-managed ChatGPT instance", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      yield* fs.makeDirectory(`${root}/native-home`);
+      yield* fs.writeFileString(
+        `${root}/native-home/auth.json`,
+        '{"tokens":{"refresh_token":"unrelated"}}',
+      );
+      const managedId = ProviderInstanceId.make("managed-account");
+      const transfer = yield* makeProviderTransfer({
+        stateDir: root,
+        homeDirectory: root,
+        environment: {},
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            providerInstances: {
+              [managedId]: {
+                driver: ProviderDriverKind.make("codex"),
+                config: { setupMode: "managed", homePath: `${root}/native-home` },
+              },
+            },
+          }),
+        ),
+      );
+      const bundle = yield* transfer.exportProviders;
+      const managed = bundle.instances.find((entry) => entry.id === managedId);
+      expect(managed?.credentials).toBeUndefined();
+      expect(
+        bundle.warnings.some(
+          (warning) => warning.includes("managed-account") && warning.includes("account profile"),
+        ),
+      ).toBe(true);
+    }),
+  );
+
+  it.effect("preserves managed setup when importing an instance without native credentials", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const transfer = yield* makeProviderTransfer({
+        stateDir: root,
+        homeDirectory: root,
+        environment: {},
+      });
+      const bundle = yield* decodeBundle({
+        format: "t3-provider-export",
+        version: 1,
+        warnings: [],
+        instances: [
+          {
+            id: "managed-account",
+            instance: { driver: "codex", config: { setupMode: "managed" } },
+          },
+        ],
+      });
+      const result = yield* transfer.importProviders({ bundle });
+      const settings = yield* (yield* ServerSettingsService).getSettings;
+      expect(settings.providerInstances[result.instances[0]!.instanceId]?.config).toMatchObject({
+        setupMode: "managed",
+      });
+    }).pipe(Effect.provide(layerTest())),
+  );
+
   it.effect("preserves provider edits made while an import prepares credential files", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -260,7 +325,7 @@ it.layer(NodeServices.layer)("provider transfer", (it) => {
   );
 
   it.effect(
-    "includes legacy configs and reports external logins without exporting other server settings",
+    "includes configured and implicit providers without exporting other server settings",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -282,7 +347,16 @@ it.layer(NodeServices.layer)("provider transfer", (it) => {
         expect(bundle).not.toHaveProperty("forgejoServers");
         expect(yield* fs.readDirectory(root)).toEqual([]);
       }).pipe(
-        Effect.provide(layerTest({ providers: { codex: { proxyUrl: "http://proxy:3128" } } })),
+        Effect.provide(
+          layerTest({
+            providerInstances: {
+              [ProviderInstanceId.make("codex")]: {
+                driver: ProviderDriverKind.make("codex"),
+                config: { proxyUrl: "http://proxy:3128" },
+              },
+            },
+          }),
+        ),
       ),
   );
 

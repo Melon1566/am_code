@@ -121,7 +121,7 @@ it.layer(NodeServices.layer)("CodexAuth", (it) => {
   it.effect("device-code sign-in publishes the code and verification page", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
-      yield* harness.auth.controller.start(owner, undefined, { method: "deviceCode" });
+      yield* harness.auth.controller.start(owner, undefined, "deviceCode");
       const waiting = yield* phase(harness.auth, "waiting");
       assert.equal(waiting.authorizationUrl, verificationUrl);
       assert.equal(waiting.userCode, "ABCD-1234");
@@ -163,10 +163,11 @@ it.layer(NodeServices.layer)("CodexAuth", (it) => {
   it.effect("another client sees neither the URL nor the code", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
-      yield* harness.auth.controller.start(owner, undefined, { method: "deviceCode" });
+      yield* harness.auth.controller.start(owner, undefined, "deviceCode");
       const waiting = yield* phase(harness.auth, "waiting", otherOwner);
       assert.equal(waiting.authorizationUrl, null);
       assert.equal(waiting.userCode, null);
+      assert.equal(waiting.interaction, null);
       assert.equal(waiting.message, "Sign-in is in progress in another client.");
     }),
   );
@@ -185,8 +186,10 @@ it.layer(NodeServices.layer)("CodexAuth", (it) => {
   it.effect("complete is not supported", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
+      const started = yield* harness.auth.controller.start(owner);
+      yield* phase(harness.auth, "waiting");
       const result = yield* harness.auth.controller
-        .complete(owner, { flowId: "x", callbackUrl: "http://127.0.0.1/" })
+        .complete(owner, { flowId: started.flowId!, callbackUrl: "http://127.0.0.1/" })
         .pipe(Effect.flip);
       assert.equal(result.operation, "complete");
     }),

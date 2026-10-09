@@ -2,7 +2,6 @@ import * as NodeOS from "node:os";
 import {
   ClaudeSettings,
   CodexSettings,
-  ProviderDriverKind,
   ProviderInstanceId,
   ProviderTransferBundle,
   ProviderTransferError,
@@ -11,7 +10,6 @@ import {
   type ProviderInstanceConfig,
   type ProviderTransferEntry,
   type ProviderTransferImportInput,
-  type ServerSettings,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
@@ -21,14 +19,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { ServerSettingsService } from "../serverSettings.ts";
-
-function allInstances(settings: ServerSettings): Record<string, ProviderInstanceConfig> {
-  const instances: Record<string, ProviderInstanceConfig> = {};
-  for (const [driver, config] of Object.entries(settings.providers)) {
-    instances[driver] = { driver: ProviderDriverKind.make(driver), config };
-  }
-  return { ...instances, ...settings.providerInstances };
-}
+import { deriveProviderInstanceConfigMap } from "./ProviderInstanceRegistryHydration.ts";
 
 const transferError = (detail: string) => new ProviderTransferError({ detail });
 const decodeCredentials = Schema.decodeUnknownEffect(
@@ -61,15 +52,14 @@ export const makeProviderTransfer = Effect.fn("makeProviderTransfer")(function* 
   const readCredentials = Effect.fn("ProviderTransfer.readCredentials")(function* (
     filename: string,
   ) {
-    const stat = yield* fs
-      .stat(filename)
-      .pipe(
-        Effect.catchTag("PlatformError", (error) =>
+    const stat = yield* fs.stat(filename).pipe(
+      Effect.catchTags({
+        PlatformError: (error) =>
           error.reason._tag === "NotFound"
             ? Effect.succeed(undefined)
             : Effect.fail(transferError("Could not read a provider credential file.")),
-        ),
-      );
+      }),
+    );
     if (!stat) return undefined;
     if (Number(stat.size) > 256 * 1024)
       return yield* transferError("A provider credential file is too large to export.");
@@ -89,7 +79,7 @@ export const makeProviderTransfer = Effect.fn("makeProviderTransfer")(function* 
     const instances: ProviderTransferEntry[] = [];
     const warnings: string[] = [];
     const groups = new Map<string, string>();
-    for (const [id, original] of Object.entries(allInstances(current))) {
+    for (const [id, original] of Object.entries(deriveProviderInstanceConfigMap(current))) {
       const instance = {
         ...original,
         ...(original.environment
@@ -118,11 +108,16 @@ export const makeProviderTransfer = Effect.fn("makeProviderTransfer")(function* 
             : resolveHome(env.CODEX_HOME, sharedHome);
         if (!groups.has(sharedHome)) groups.set(sharedHome, String(groups.size));
         homeGroup = groups.get(sharedHome);
-        const content = yield* readCredentials(path.join(authHome, "auth.json"));
+        const content =
+          config.setupMode === "managed"
+            ? undefined
+            : yield* readCredentials(path.join(authHome, "auth.json"));
         if (content !== undefined) credentials = { kind: "codex", content };
         else if (resolveProviderInstanceEnabled(instance))
           warnings.push(
-            `${instance.displayName ?? id}: no auth.json was found. Keychain-only or external logins need sign-in on the destination.`,
+            config.setupMode === "managed"
+              ? `${instance.displayName ?? id}: T3-managed ChatGPT sign-in must be reconnected on the destination using its account profile.`
+              : `${instance.displayName ?? id}: no auth.json was found. Keychain-only or external logins need sign-in on the destination.`,
           );
       } else if (instance.driver === "claudeAgent") {
         const config = yield* decodeClaudeSettings(instance.config ?? {}).pipe(
@@ -204,7 +199,7 @@ export const makeProviderTransfer = Effect.fn("makeProviderTransfer")(function* 
     const current = yield* settings.getSettings.pipe(
       Effect.mapError(() => transferError("Could not read destination provider settings.")),
     );
-    const usedIds = new Set(Object.keys(allInstances(current)));
+    const usedIds = new Set(Object.keys(deriveProviderInstanceConfigMap(current)));
     const next: Record<ProviderInstanceId, ProviderInstanceConfig> = {};
     const imported: { sourceId: ProviderInstanceId; instanceId: ProviderInstanceId }[] = [];
     const importId = yield* crypto.randomUUIDv4.pipe(
@@ -249,6 +244,10 @@ export const makeProviderTransfer = Effect.fn("makeProviderTransfer")(function* 
             config: {
               ...config,
               binaryPath: "codex",
+              setupMode:
+                "setupMode" in config && config.setupMode === "managed" && !entry.credentials
+                  ? "managed"
+                  : "existing",
               homePath: sharedHome,
               shadowHomePath: instanceHome,
             },

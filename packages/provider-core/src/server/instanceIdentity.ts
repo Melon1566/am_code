@@ -1,0 +1,33 @@
+import type { ProviderDriverKind, ServerProvider } from "@t3tools/contracts";
+
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import type { ServerProviderDraft } from "@t3tools/provider-core/server/snapshotProbe";
+
+/**
+ * Stamp instance identity onto a `ServerProvider` snapshot produced by the
+ * driver-kind-only snapshot helpers. Every driver builds its snapshot without
+ * knowing its own instance, so it pipes the draft through this stamper before
+ * publishing. Once `buildServerProvider` in `providerSnapshot.ts` is widened to
+ * accept `instanceId`/`driver`, this wrapper disappears.
+ */
+export const withInstanceIdentity =
+  (input: {
+    readonly instanceId: ProviderInstance["instanceId"];
+    readonly driverKind: ProviderDriverKind;
+    readonly displayName: string | undefined;
+    readonly accentColor: string | undefined;
+    readonly continuationGroupKey: string;
+    /** True when the instance takes part in account pooling with its continuation group. */
+    readonly pooled?: boolean | undefined;
+  }) =>
+  (snapshot: ServerProviderDraft): ServerProvider => ({
+    ...snapshot,
+    instanceId: input.instanceId,
+    driver: input.driverKind,
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    ...(input.accentColor ? { accentColor: input.accentColor } : {}),
+    continuation: {
+      groupKey: input.continuationGroupKey,
+      ...(input.pooled === true ? { pooled: true } : {}),
+    },
+  });

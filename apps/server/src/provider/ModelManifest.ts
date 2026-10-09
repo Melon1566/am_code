@@ -18,23 +18,28 @@ import {
   TrimmedNonEmptyString,
   type ProviderDriverKind,
   type ServerProviderModel,
+  type ServerProviderUpdateRequiredModel,
 } from "@t3tools/contracts";
 import { codexModelFamily } from "@t3tools/shared/model";
+import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 
+import { writeFileStringAtomically } from "../atomicWrite.ts";
 import { ServerConfig } from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { hasValidClaudeManifestAdapters } from "./ClaudeModelManifest.ts";
 import bundledManifestJson from "./model-manifest.json" with { type: "json" };
-import type { ServerProviderDraft } from "./providerSnapshot.ts";
+import { ProviderCompatibilityPolicy } from "./providerCompatibility.ts";
+import type { ServerProviderDraft } from "@t3tools/provider-core/server/snapshotProbe";
 
 const MODEL_MANIFEST_URL =
   "https://raw.githubusercontent.com/pingdotgg/t3code/main/apps/server/src/provider/model-manifest.json";
@@ -89,6 +94,7 @@ const ModelManifestEnvelopeSchema = Schema.Struct({
    * files still decode; they count as older than any dated bundle.
    */
   updatedAt: Schema.optional(Schema.String),
+  compatibility: Schema.optional(Schema.Array(ProviderCompatibilityPolicy)),
   currentModels: Schema.Record(Schema.String, Schema.Array(Schema.String)),
   providers: Schema.optional(Schema.Record(Schema.String, ManifestProviderCatalog)),
 });
@@ -218,10 +224,7 @@ function isLegacyModel(
   const catalogModel =
     catalog?.find((model) => model.slug === slug) ??
     catalog?.find((model) => model.slug === family);
-  if (catalogModel) return catalogModel.status === "legacy";
-  const currentModels = manifest.currentModels[driverKind];
-  if (!currentModels) return false;
-  return !currentModels.includes(slug) && !currentModels.includes(family);
+  return catalogModel?.status === "legacy";
 }
 
 /**
@@ -233,14 +236,53 @@ export function applyModelManifest(
   manifest: ModelManifestData,
   driverKind: ProviderDriverKind,
 ): ServerProviderDraft {
+  const { updateRequiredModels: _previous, ...rest } = draft;
+  const updateRequiredModels =
+    driverKind === "codex" ? codexUpdateRequiredModels(manifest, draft) : [];
   return {
-    ...draft,
+    ...rest,
     models: applyManifestDefault(
       classifyModels(draft.models, manifest, driverKind),
       manifest,
       driverKind,
     ),
+    ...(updateRequiredModels.length > 0 ? { updateRequiredModels } : {}),
   };
+}
+
+const CodexModelAdapter = Schema.Struct({
+  codex: Schema.optional(Schema.Struct({ minVersion: Schema.optional(TrimmedNonEmptyString) })),
+});
+const decodeCodexModelAdapter = Schema.decodeUnknownOption(CodexModelAdapter);
+
+/**
+ * Codex lists only the models its own build knows, so a model released after
+ * the installed CLI never shows up. A current manifest entry with
+ * `adapter.codex.minVersion` names that model, letting the picker say an update
+ * unlocks it instead of leaving users to wonder where it is.
+ */
+function codexUpdateRequiredModels(
+  manifest: ModelManifestData,
+  draft: ServerProviderDraft,
+): ReadonlyArray<ServerProviderUpdateRequiredModel> {
+  const version = draft.version?.replace(/^v/, "");
+  if (!version || parseSemver(version) === null) return [];
+  const discovered = new Set(draft.models.map((model) => codexModelFamily(model.slug)));
+  return (manifest.providers?.codex?.models ?? []).flatMap((entry) => {
+    if (entry.status !== "current" || discovered.has(codexModelFamily(entry.slug))) return [];
+    const minVersion = Option.getOrUndefined(decodeCodexModelAdapter(entry.adapter ?? {}))?.codex
+      ?.minVersion;
+    if (!minVersion || parseSemver(minVersion) === null) return [];
+    if (compareSemverVersions(version, minVersion) >= 0) return [];
+    return [
+      {
+        slug: entry.slug,
+        name: entry.name,
+        ...(entry.badge ? { badge: entry.badge } : {}),
+        minVersion,
+      },
+    ];
+  });
 }
 
 /** The manifest's chat default for `driverKind`, when it names one. */
@@ -315,6 +357,8 @@ export class ModelManifest extends Context.Service<
     readonly current: Effect.Effect<ModelManifestData>;
     /** Manifest after a TTL-gated remote refresh; never fails. */
     readonly refresh: Effect.Effect<ModelManifestData>;
+    /** Explicit refresh bypasses freshness and retry timers, retaining last-good data. */
+    readonly forceRefresh: Effect.Effect<ModelManifestData>;
     /** Forks `refresh` into the service's own scope. Drivers call this from
      * provider checks: the fetch is process-shared state, so it must survive
      * the teardown of whichever instance happened to trigger it. */
@@ -326,6 +370,7 @@ export class ModelManifest extends Context.Service<
 const BundledOnlyModelManifest: ModelManifest["Service"] = {
   current: Effect.succeed(BUNDLED_MODEL_MANIFEST),
   refresh: Effect.succeed(BUNDLED_MODEL_MANIFEST),
+  forceRefresh: Effect.succeed(BUNDLED_MODEL_MANIFEST),
   refreshInBackground: Effect.void,
 };
 
@@ -369,7 +414,7 @@ export const make = Effect.gen(function* () {
     }),
   );
 
-  const refresh = Effect.fn("ModelManifest.refresh")(function* () {
+  const refresh = Effect.fn("ModelManifest.refresh")(function* (force = false) {
     yield* ensureDiskCacheLoaded;
     const now = yield* Clock.currentTimeMillis;
     // A timestamp in the future means the wall clock moved backwards (the
@@ -377,8 +422,8 @@ export const make = Effect.gen(function* () {
     // it as expired: the refetch rewrites both timestamps and self-heals.
     const isWithin = (sinceMs: number | null, windowMs: number) =>
       sinceMs !== null && now >= sinceMs && now - sinceMs < windowMs;
-    if (isWithin(fetchedAtMs, MANIFEST_TTL_MS)) return manifest;
-    if (isWithin(lastAttemptMs, MANIFEST_RETRY_MS)) return manifest;
+    if (!force && isWithin(fetchedAtMs, MANIFEST_TTL_MS)) return manifest;
+    if (!force && isWithin(lastAttemptMs, MANIFEST_RETRY_MS)) return manifest;
 
     // The same switch that gates provider CLI update checks. It stops network
     // fetches only: a manifest already cached on disk from an earlier fetch
@@ -397,13 +442,19 @@ export const make = Effect.gen(function* () {
       Effect.timeout(FETCH_TIMEOUT_MS),
       Effect.catchCause(() => Effect.succeed(null)),
     );
-    if (fetched === null) return manifest;
+    // A CDN can still serve an earlier edit after a release. Apply the same
+    // freshness rule as the disk cache so it cannot undo bundled version gates.
+    if (fetched === null || manifestUpdatedAtMs(fetched) < manifestUpdatedAtMs(manifest)) {
+      return manifest;
+    }
 
     manifest = fetched;
     fetchedAtMs = now;
     yield* encodeManifestCache({ fetchedAtMs: now, manifest: fetched }).pipe(
-      Effect.flatMap((serialized) => fileSystem.writeFileString(cachePath, serialized)),
-      Effect.catchCause(() => Effect.void),
+      Effect.flatMap((contents) => writeFileStringAtomically({ filePath: cachePath, contents })),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.ignoreCause,
     );
     return manifest;
   });
@@ -413,6 +464,7 @@ export const make = Effect.gen(function* () {
   return ModelManifest.of({
     current: ensureDiskCacheLoaded.pipe(Effect.map(() => manifest)),
     refresh: guardedRefresh,
+    forceRefresh: refreshSemaphore.withPermits(1)(refresh(true)),
     refreshInBackground: Effect.forkIn(guardedRefresh, serviceScope).pipe(Effect.asVoid),
   });
 });

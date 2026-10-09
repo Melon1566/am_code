@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { ProviderDriverKind } from "@t3tools/contracts";
-
-import { addProviderWizardSteps, resolveWizardNavigation } from "./AddProviderInstanceDialog.logic";
+import {
+  deriveAvailableInstanceId,
+  getProviderIdentityDraft,
+  isConfiguredAcpRegistryAgent,
+  resolveAcpRegistryWizardNavigation,
+  resolveWizardNavigation,
+  updateProviderIdentityDraft,
+} from "./AddProviderInstanceDialog.logic";
 
 describe("resolveWizardNavigation", () => {
   const invalidId = { instanceIdError: "Instance ID is required." };
@@ -43,29 +48,70 @@ describe("resolveWizardNavigation", () => {
     expect(resolveWizardNavigation(2, 8, 3, validId)).toEqual({ kind: "navigate", step: 2 });
     expect(resolveWizardNavigation(0, -1, 3, invalidId)).toEqual({ kind: "navigate", step: 0 });
   });
-
-  it("stays put once the instance has been created", () => {
-    expect(resolveWizardNavigation(3, 0, 4, { ...validId, locked: true })).toEqual({
-      kind: "navigate",
-      step: 3,
-    });
-  });
 });
 
-describe("addProviderWizardSteps", () => {
-  it("adds a sign-in step for Codex and Claude only", () => {
-    for (const driver of ["codex", "claudeAgent"]) {
-      expect(addProviderWizardSteps(ProviderDriverKind.make(driver))).toEqual([
-        "Driver",
-        "Identity",
-        "Config",
-        "Sign in",
-      ]);
-    }
-    expect(addProviderWizardSteps(ProviderDriverKind.make("cursor"))).toEqual([
-      "Driver",
-      "Identity",
-      "Config",
-    ]);
+describe("ACP Registry wizard", () => {
+  it("requires a prepared result or valid manual configuration before Identity", () => {
+    expect(
+      resolveAcpRegistryWizardNavigation(0, 1, {
+        instanceIdError: null,
+        selectionError: "Select an ACP or configure one manually.",
+      }),
+    ).toEqual({
+      kind: "blocked",
+      step: 0,
+      error: "Select an ACP or configure one manually.",
+    });
+
+    expect(
+      resolveAcpRegistryWizardNavigation(0, 1, {
+        instanceIdError: null,
+        selectionError: null,
+      }),
+    ).toEqual({ kind: "navigate", step: 1 });
+  });
+
+  it("derives a collision-free instance id without exceeding the slug limit", () => {
+    const derive = (label: string) => `acpRegistry_${label}`;
+    const existing = new Set(["acpRegistry_gemini", "acpRegistry_gemini_2"]);
+
+    expect(deriveAvailableInstanceId(derive, "gemini", existing)).toBe("acpRegistry_gemini_3");
+
+    const longBase = `acpRegistry_${"a".repeat(48)}`;
+    expect(deriveAvailableInstanceId(() => longBase, "ignored", new Set([longBase]))).toHaveLength(
+      62,
+    );
+  });
+
+  it("only marks matching ACP Registry instances as already added", () => {
+    const instances = {
+      codex: { driver: "codex", config: { agentId: "gemini" } },
+      registry: { driver: "acpRegistry", config: { agentId: "gemini" } },
+    };
+
+    expect(isConfiguredAcpRegistryAgent(instances, "gemini")).toBe(true);
+    expect(isConfiguredAcpRegistryAgent(instances, "codex")).toBe(false);
+  });
+
+  it("keeps registry-prefilled identity separate from other drivers", () => {
+    const registryDrafts = updateProviderIdentityDraft({}, "acpRegistry", {
+      label: "Gemini CLI",
+      instanceIdOverride: "acpRegistry_gemini_cli",
+    });
+
+    expect(getProviderIdentityDraft(registryDrafts, "codex")).toEqual({
+      label: "",
+      accentColor: "",
+      instanceIdOverride: null,
+    });
+
+    const drafts = updateProviderIdentityDraft(registryDrafts, "codex", {
+      label: "Work",
+      instanceIdOverride: "codex_work",
+    });
+    expect(getProviderIdentityDraft(drafts, "acpRegistry")).toMatchObject({
+      label: "Gemini CLI",
+      instanceIdOverride: "acpRegistry_gemini_cli",
+    });
   });
 });

@@ -6,7 +6,7 @@
 #   make open            launch the built app (quit the installed T3 Code first)
 #   make run             app + open
 #   make sign            re-sign the built app with a local Apple identity
-#   make snapshot        back up ~/.t3/userdata/state.sqlite before a risky upgrade
+#   make snapshot        back up the current T3 database before a risky upgrade
 #   make clean           remove build artifacts in release/
 #   make proxy           check the provider proxy tunnel end to end
 #   make proxy-restart   reconnect the tunnel now
@@ -127,8 +127,7 @@ proxy-shell:
 	@PATH="$(HOME)/.local/bin:$$PATH" aws ssm start-session --target $(PROXY_INSTANCE)
 
 node_modules:
-	$(NODE_BIN)/npx -y pnpm@11.10.0 install
-	git checkout -- pnpm-lock.yaml
+	$(NODE_BIN)/npx -y pnpm@11.10.0 install --frozen-lockfile
 
 .env:
 	cp .env.example .env
@@ -136,7 +135,7 @@ node_modules:
 # VACUUM INTO is safe while the app has the database open.
 snapshot:
 	mkdir -p ~/.t3/backups
-	bun -e "new (require('bun:sqlite').Database)(process.env.HOME + '/.t3/userdata/state.sqlite', { readonly: true }).run(\"VACUUM INTO '\" + process.env.HOME + \"/.t3/backups/state-$$(date +%Y%m%d-%H%M%S).sqlite'\")"
+	bun -e "const fs = require('node:fs'); const home = process.env.HOME + '/.t3/userdata/'; const name = fs.existsSync(home + 'statev2.sqlite') ? 'statev2' : 'state'; new (require('bun:sqlite').Database)(home + name + '.sqlite', { readonly: true }).run(\"VACUUM INTO '\" + process.env.HOME + '/.t3/backups/' + name + \"-$$(date +%Y%m%d-%H%M%S).sqlite'\")"
 	@ls -t ~/.t3/backups | head -1
 
 clean:

@@ -20,11 +20,9 @@ function renderStepButtons(
   onNavigation: Parameters<typeof AddProviderInstanceWizardSteps>[0]["onNavigation"],
 ): ReactElement<StepButtonProps>[] {
   const header = AddProviderInstanceWizardSteps({
-    steps: ADD_PROVIDER_WIZARD_STEPS,
     currentStep,
     summaries: ["Codex", "Codex Workspace", null],
     instanceIdError,
-    locked: false,
     onNavigation,
   });
 

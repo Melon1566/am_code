@@ -11,7 +11,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { ServerSettingsService } from "../serverSettings.ts";
+import * as ServerSettings from "../serverSettings.ts";
 
 export interface ConfiguredForgejoServer {
   /** Normalized server URL: scheme, host with port, optional mount path, no trailing slash. */
@@ -27,8 +27,8 @@ export class ForgejoServerTokens extends Context.Service<
   }
 >()("t3/sourceControl/ForgejoServerTokens") {}
 
-export const make = Effect.gen(function* () {
-  const settings = yield* ServerSettingsService;
+const make = Effect.gen(function* () {
+  const settings = yield* ServerSettings.ServerSettingsService;
   const list = settings.getSettings.pipe(
     Effect.map((current) =>
       Object.entries(current.forgejoServers)
