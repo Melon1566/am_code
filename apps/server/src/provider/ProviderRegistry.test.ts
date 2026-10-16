@@ -45,9 +45,11 @@ import * as AntigravityInstallation from "./AntigravityInstallation.ts";
 import * as ModelManifest from "./ModelManifest.ts";
 import { applyProviderCompatibility } from "./providerCompatibility.ts";
 import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
-import * as OpenCodeRuntime from "./opencodeRuntime.ts";
-import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
-import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
+import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
+import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderInstanceRegistryHydration from "./ProviderInstanceRegistryHydration.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
@@ -68,7 +70,6 @@ const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodedDefaultServerSettings = encodeServerSettings(DEFAULT_SERVER_SETTINGS);
 
-/** Default slots that settings mark disabled, so their probes never spawn. */
 const disabledDefaultSlots = (
   ...drivers: ReadonlyArray<string>
 ): ContractServerSettings["providerInstances"] =>
@@ -88,8 +89,6 @@ const disabledCodexSettings: CodexSettings = Schema.decodeSync(CodexSettings)({
 
 process.env.T3CODE_CURSOR_ENABLED = "1";
 
-// ── Test helpers ────────────────────────────────────────────────────
-
 const encoder = new TextEncoder();
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 const withBundledCompatibility = (snapshot: ServerProvider) =>
@@ -99,7 +98,6 @@ const withBundledCompatibility = (snapshot: ServerProvider) =>
     ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
   );
 
-// Provider metadata checks use a bundled manifest and stubbed HTTP.
 const layerTestHttpClient = Layer.succeed(
   HttpClient.HttpClient,
   HttpClient.make((request) =>
@@ -164,6 +162,7 @@ type TestClaudeCapabilities = {
   readonly email: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
+  readonly apiKeySource: string | undefined;
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
 };
@@ -174,6 +173,7 @@ function claudeCapabilities(overrides: Partial<TestClaudeCapabilities> = {}) {
       email: undefined,
       subscriptionType: undefined,
       tokenSource: undefined,
+      apiKeySource: undefined,
       apiProvider: undefined,
       slashCommands: [],
       ...overrides,
@@ -382,10 +382,6 @@ function makeMutableServerSettingsService(
   });
 }
 
-// The registry writes the status cache and only then publishes the change, so
-// a subscriber that sees `checkedAt` on the stream knows the file is on disk.
-// Subscribed before the publish that triggers it; a spin on the file would
-// race the write and lose on a slow host.
 const awaitPersistedProvider = (
   registry: ProviderRegistry.ProviderRegistry["Service"],
   checkedAt: string,
@@ -592,6 +588,22 @@ it.layer(
       }),
     );
 
+    it.effect(
+      "does not time out a healthy probe slower than the shared 10s auth-probe timeout (#7513)",
+      () =>
+        Effect.gen(function* () {
+          const statusFiber = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.sleep("15 seconds").pipe(Effect.as(makeCodexProbeSnapshot())),
+          ).pipe(Effect.forkChild);
+
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("15 seconds");
+
+          const status = yield* Fiber.join(statusFiber);
+          assert.strictEqual(status.status, "ready");
+        }),
+    );
+
     it.effect("closes the app-server probe scope when provider status times out", () =>
       Effect.gen(function* () {
         const killCalls = yield* Ref.make(0);
@@ -601,7 +613,7 @@ it.layer(
         );
 
         yield* Effect.yieldNow;
-        yield* TestClock.adjust("11 seconds");
+        yield* TestClock.adjust("21 seconds");
         yield* Effect.yieldNow;
 
         const status = yield* Fiber.join(statusFiber);
@@ -783,7 +795,6 @@ it.layer(
     });
 
     it("does not bring back models the installed CLI is too old to run", () => {
-      // The pending snapshot lists the whole catalog before the version is known.
       const pendingProvider = {
         instanceId: ProviderInstanceId.make("claudeAgent"),
         driver: ProviderDriverKind.make("claudeAgent"),
@@ -1437,7 +1448,6 @@ it.layer(
           models: signedIn.models,
         });
         assert.equal("message" in merged, false);
-        // The next periodic probe reads the merged snapshot as its previous state.
         assert.deepStrictEqual(
           ProviderRegistry.mergeProviderSnapshot(merged, restartProbe),
           merged,
@@ -1475,7 +1485,6 @@ it.layer(
           { ...restartProbe, status: "disabled", enabled: false },
           { ...restartProbe, status: "error", installed: false },
           { ...restartProbe, driver: ProviderDriverKind.make("codex") },
-          // The instance was rebuilt with another sign-in method.
           { ...restartProbe, auth: { status: "unknown", type: "gemini-api-key" } },
         ] satisfies ReadonlyArray<ServerProvider>;
         for (const next of untouched) {
@@ -1817,7 +1826,6 @@ it.layer(
           );
           yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
           assert.strictEqual(yield* Ref.get(snapshotCalls), 3);
-          // Nothing watches skill directories, so an expired scan is redone on use.
           yield* TestClock.adjust(PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS - 1);
           yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
           assert.strictEqual(yield* Ref.get(snapshotCalls), 3);
@@ -1841,8 +1849,6 @@ it.layer(
             [newSkills],
           );
 
-          // A slow fresh scan that read older files must not overwrite a
-          // newer scan that finished first.
           const slowStarted = yield* Deferred.make<void>();
           const releaseSlow = yield* Deferred.make<void>();
           yield* Ref.set(scanGate, { started: slowStarted, release: releaseSlow });
@@ -2691,38 +2697,14 @@ it.layer(
       }),
     );
 
-    // This test intentionally avoids `mockCommandSpawnerLayer` so the real
-    // `probeCodexAppServerProvider` path runs — including the full
-    // `codex app-server` RPC handshake via `CodexClient.layerChildProcess`.
-    // We point `binaryPath` at a name that cannot exist on any machine so
-    // the real `ChildProcessSpawner` deterministically returns ENOENT; the
-    // probe wraps that as `CodexAppServerSpawnError` and
-    // `checkCodexProviderStatus` turns it into the user-visible "not
-    // installed" error snapshot. If the aggregator's `syncLiveSources`
-    // breaks — the `codex_personal`-never-probes bug we are guarding
-    // against — that snapshot never lands in `getProviders` and the
-    // assertions below fail.
     it.effect("propagates real Codex probe failures to the aggregator at boot", () =>
       Effect.gen(function* () {
         const missingBinary = `t3code_codex_missing_`;
         const serverSettings = yield* makeMutableServerSettingsService(
           decodeServerSettings(
             deepMerge(encodedDefaultServerSettings, {
-              // `providerInstances` keys are branded `ProviderInstanceId`;
-              // the branded index signature rejects plain string literals
-              // at the TS level even though the runtime schema happily
-              // accepts + decodes them. Cast the patch to `unknown` so
-              // the `Schema.decodeSync` below does the real validation.
               providerInstances: {
-                // Disable every built-in probe that would otherwise spawn
-                // on the CI host. `enabled: false` short-circuits each
-                // driver's probe *before* it touches the spawner, so the
-                // test environment stays isolated from the dev
-                // machine's PATH.
                 ...disabledDefaultSlots("codex", "claudeAgent", "cursor", "grok", "opencode"),
-                // Matches the shape the user had in `.t3/dev/settings.json`
-                // when the bug was reported: a custom enabled Codex instance
-                // pointing at a binary the server has to actually spawn.
                 codex_personal: {
                   driver: "codex",
                   displayName: "Codex Personal",
@@ -2757,17 +2739,14 @@ it.layer(
               ProviderEventLoggers.NoOpProviderEventLoggers,
             ),
           ),
+          Layer.provideMerge(ProviderLatestVersions.layer),
+          Layer.provideMerge(McpProviderSessions.layer),
           Layer.provideMerge(ModelManifest.layerTest),
           Layer.provideMerge(ResetCreditCoordinator.layerTest),
           Layer.provideMerge(
             OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
           ),
           Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
-          // NO spawner mock — `ChildProcessSpawner` is supplied by the
-          // outer `NodeServices.layer` on `it.layer(...)` and will
-          // genuinely spawn a subprocess. The missing-binary ENOENT is
-          // what exercises the same failure mode as a misconfigured
-          // production `binaryPath`.
         );
         const runtimeServices = yield* Layer.build(layerProviderRegistry).pipe(
           Scope.provide(scope),
@@ -2808,7 +2787,6 @@ it.layer(
       }),
     );
 
-    // A binary path change must rebuild Codex and publish its new probe result.
     it.effect("re-probes when settings change the codex binaryPath", () =>
       Effect.gen(function* () {
         const firstMissing = `t3code_codex_first_`;
@@ -2860,6 +2838,8 @@ it.layer(
               ProviderEventLoggers.NoOpProviderEventLoggers,
             ),
           ),
+          Layer.provideMerge(ProviderLatestVersions.layer),
+          Layer.provideMerge(McpProviderSessions.layer),
           Layer.provideMerge(ModelManifest.layerTest),
           Layer.provideMerge(ResetCreditCoordinator.layerTest),
           Layer.provideMerge(
@@ -2920,12 +2900,8 @@ it.layer(
               },
             },
           });
-          // Start the lazy stream only after publishing. A watcher that did
-          // not subscribe before forking has already lost this update.
           yield* Deferred.succeed(allowLazySettingsStream, undefined);
 
-          // Hold the second probe until the aggregator sees the rebuilt
-          // instance. Its next error must come from the new executable.
           yield* Deferred.await(secondProbeStarted);
           yield* pendingRebuild;
           const rebuiltError = yield* Stream.toPull(
@@ -2978,6 +2954,8 @@ it.layer(
               ProviderEventLoggers.NoOpProviderEventLoggers,
             ),
           ),
+          Layer.provideMerge(ProviderLatestVersions.layer),
+          Layer.provideMerge(McpProviderSessions.layer),
           Layer.provideMerge(ModelManifest.layerTest),
           Layer.provideMerge(ResetCreditCoordinator.layerTest),
           Layer.provideMerge(
@@ -3036,6 +3014,8 @@ it.layer(
                 ProviderEventLoggers.NoOpProviderEventLoggers,
               ),
             ),
+            Layer.provideMerge(ProviderLatestVersions.layer),
+            Layer.provideMerge(McpProviderSessions.layer),
             Layer.provideMerge(ModelManifest.layerTest),
             Layer.provideMerge(ResetCreditCoordinator.layerTest),
             Layer.provideMerge(
@@ -3114,8 +3094,6 @@ it.layer(
     );
   });
 
-  // ── checkClaudeProviderStatus tests ──────────────────────────
-
   describe("checkClaudeProviderStatus", () => {
     it.effect("returns ready when claude is installed and authenticated", () =>
       Effect.gen(function* () {
@@ -3167,6 +3145,100 @@ it.layer(
       ),
     );
 
+    it.effect("reports a logged-out CLI as unauthenticated", () =>
+      Effect.gen(function* () {
+        // The capability probe resolves for a logged-out CLI, so `tokenSource:
+        // "none"` is the only thing separating it from an authenticated one.
+        const status = yield* checkClaudeProviderStatus(
+          defaultClaudeSettings,
+          claudeCapabilities({
+            tokenSource: "none",
+            apiKeySource: "none",
+            apiProvider: "firstParty",
+          }),
+        );
+        assert.strictEqual(status.status, "error");
+        assert.strictEqual(status.auth.status, "unauthenticated");
+      }).pipe(
+        Effect.provide(
+          layerMockSpawner((args) => {
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
+    it.effect("keeps an API key install authenticated when it reports no token source", () =>
+      Effect.gen(function* () {
+        // `ANTHROPIC_API_KEY` never populates `tokenSource`, so reading that
+        // field alone would log the install out.
+        const status = yield* checkClaudeProviderStatus(
+          defaultClaudeSettings,
+          claudeCapabilities({
+            tokenSource: "none",
+            apiKeySource: "ANTHROPIC_API_KEY",
+            apiProvider: "firstParty",
+          }),
+        );
+        assert.strictEqual(status.status, "ready");
+        assert.strictEqual(status.auth.status, "authenticated");
+      }).pipe(
+        Effect.provide(
+          layerMockSpawner((args) => {
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
+    it.effect("keeps a third-party backend authenticated without any token source", () =>
+      Effect.gen(function* () {
+        // Bedrock and Vertex authenticate outside the CLI, so the account
+        // payload is empty by design rather than because nobody logged in.
+        const status = yield* checkClaudeProviderStatus(
+          defaultClaudeSettings,
+          claudeCapabilities({ tokenSource: "none", apiProvider: "bedrock" }),
+        );
+        assert.strictEqual(status.status, "ready");
+        assert.strictEqual(status.auth.status, "authenticated");
+      }).pipe(
+        Effect.provide(
+          layerMockSpawner((args) => {
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
+    it.effect("keeps a CLI that says nothing about its account authenticated", () =>
+      Effect.gen(function* () {
+        // Profile-authenticated installs report no token source at all, and a
+        // CLI too old to send an account payload reports nothing whatsoever.
+        // Only `tokenSource: "none"` disproves authentication; saying nothing
+        // is not the same as saying no.
+        const status = yield* checkClaudeProviderStatus(
+          defaultClaudeSettings,
+          claudeCapabilities(),
+        );
+        assert.strictEqual(status.status, "ready");
+        assert.strictEqual(status.auth.status, "authenticated");
+      }).pipe(
+        Effect.provide(
+          layerMockSpawner((args) => {
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
     it.effect("returns a display label for claude subscription types", () =>
       Effect.gen(function* () {
         const status = yield* checkClaudeProviderStatus(
@@ -3204,6 +3276,7 @@ it.layer(
                 email: undefined,
                 subscriptionType: undefined,
                 tokenSource: undefined,
+                apiKeySource: undefined,
                 apiProvider: undefined,
                 slashCommands: [],
                 usage: { rate_limits_available: true, rate_limits: {} },
@@ -3323,7 +3396,6 @@ it.layer(
           claudeCapabilities(),
         );
         assert.strictEqual(status.status, "ready");
-        // The home is resolved through the host Path before it reaches the env.
         assert.deepStrictEqual(
           recorded.commands.map((command) => command.env?.CLAUDE_CONFIG_DIR),
           [(yield* Path.Path).resolve(claudeConfigDir)],

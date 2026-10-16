@@ -12,8 +12,8 @@ import {
 import * as Effect from "effect/Effect";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
-import { CursorProviderCapabilitiesV2 } from "./Adapters/CursorAdapterV2.ts";
-import { GrokProviderCapabilitiesV2 } from "./Adapters/GrokAdapterV2.ts";
+import { CursorProviderCapabilitiesV2 } from "@t3tools/provider-cursor/testing";
+import { GrokProviderCapabilitiesV2 } from "@t3tools/provider-grok/testing";
 import * as CommandPolicy from "./CommandPolicy.ts";
 
 const commandId = CommandId.make("command-policy-test");
@@ -235,7 +235,6 @@ layer("CommandPolicyV2", (it) => {
               readonly detail: string;
             };
       }> = [
-        // Ordinary steering prefers direct active steering whenever available.
         {
           forceRestart: false,
           supportsActiveSteering: true,
@@ -264,8 +263,6 @@ layer("CommandPolicyV2", (it) => {
           supportsSteeringByInterruptRestart: true,
           expected: { type: "policy", value: "active_steering" },
         },
-        // Ordinary steering falls back to interrupt-and-restart, then to a
-        // typed error naming the capability that is actually missing.
         {
           forceRestart: false,
           supportsActiveSteering: false,
@@ -298,9 +295,6 @@ layer("CommandPolicyV2", (it) => {
           supportsSteeringByInterruptRestart: false,
           expected: { type: "error", capability: "active_steering", detail: fallbackDetail },
         },
-        // A forced restart skips direct steering and only succeeds via
-        // interrupt-and-restart; every other combination must report that
-        // capability instead of claiming live steering is unsupported.
         {
           forceRestart: true,
           supportsActiveSteering: true,

@@ -18,44 +18,40 @@ import {
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { MuseSettings } from "../settings.ts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type * as Exit from "effect/Exit";
-import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { ProviderHost } from "@t3tools/provider-core/server/ProviderHost";
-import { layerTestProviderHost } from "@t3tools/provider-testing/host";
-import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { MuseItem } from "./protocol.ts";
 import type { MuseSdkHost } from "./sdk.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import {
-  ProviderAdapterV2RuntimePolicy,
-  type ProviderAdapterV2Event,
-  type ProviderAdapterV2TurnInput,
-} from "@t3tools/provider-core/server/ProviderAdapter";
-import type { ProviderContinuationRequest } from "@t3tools/provider-core/server/continuationRequests";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeMuseAdapterV2, type MuseAdapterV2Options } from "./adapter.ts";
 
 const testLayer = Layer.mergeAll(
   NodeServices.layer,
   IdAllocator.layer,
-  layerTestProviderHost().pipe(Layer.provide(NodeServices.layer)),
+  McpProviderSessions.layer,
+  TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
 );
 const MUSE_PROVIDER = ProviderDriverKind.make("muse");
 const INSTANCE_ID = ProviderInstanceId.make("muse_work");
 const THREAD_ID = ThreadId.make("thread-muse-test");
 const MODEL = "muse-spark-1.3-contributor";
 const museSettings = Schema.decodeSync(MuseSettings)({ enabled: true });
-const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
   runtimeMode: "full-access",
   interactionMode: "default",
   cwd: null,
@@ -199,13 +195,10 @@ const makeHarness = Effect.fnUntraced(function* (
   > = {},
 ) {
   let hostCount = 0;
-  const adapter = makeMuseAdapterV2({
+  const adapter = yield* makeMuseAdapterV2({
     instanceId,
     settings: museSettings,
     environment: { PATH: "/fake/bin" },
-    idAllocator: yield* IdAllocator.IdAllocatorV2,
-    host: yield* ProviderHost,
-    fileSystem: yield* FileSystem.FileSystem,
     createHost: async () => (hostCount++ === 0 ? fake.host : (replacement ?? fake).host),
     ...overrides,
   });
@@ -216,8 +209,8 @@ const makeHarness = Effect.fnUntraced(function* (
     runtimePolicy: policy,
     ...(initialNativeThreadId ? { initialNativeThreadId } : {}),
   });
-  const emitted = yield* Queue.unbounded<ProviderAdapterV2Event>();
-  const allEvents: ProviderAdapterV2Event[] = [];
+  const emitted = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+  const allEvents: ProviderAdapter.ProviderAdapterV2Event[] = [];
   const eventsEnded = yield* Deferred.make<Exit.Exit<void, Stream.Error<typeof runtime.events>>>();
   yield* runtime.events.pipe(
     Stream.runForEach((event) =>
@@ -236,14 +229,21 @@ const makeHarness = Effect.fnUntraced(function* (
     runtimePolicy: policy,
     ...(existingProviderThread ? { existingProviderThread } : {}),
   });
-  const takeEvent = Effect.fnUntraced(function* <T extends ProviderAdapterV2Event["type"]>(
+  const takeEvent = Effect.fnUntraced(function* <
+    T extends ProviderAdapter.ProviderAdapterV2Event["type"],
+  >(
     type: T,
-    predicate: (event: Extract<ProviderAdapterV2Event, { type: T }>) => boolean = () => true,
+    predicate: (
+      event: Extract<ProviderAdapter.ProviderAdapterV2Event, { type: T }>,
+    ) => boolean = () => true,
   ) {
     while (true) {
       const event = yield* Queue.take(emitted);
-      if (event.type === type && predicate(event as Extract<ProviderAdapterV2Event, { type: T }>)) {
-        return event as Extract<ProviderAdapterV2Event, { type: T }>;
+      if (
+        event.type === type &&
+        predicate(event as Extract<ProviderAdapter.ProviderAdapterV2Event, { type: T }>)
+      ) {
+        return event as Extract<ProviderAdapter.ProviderAdapterV2Event, { type: T }>;
       }
     }
   });
@@ -275,7 +275,7 @@ const turnInput = Effect.fnUntraced(function* (
   providerThread: OrchestrationV2ProviderThread,
   runOrdinal = 1,
   policy = runtimePolicy,
-): Effect.fn.Return<ProviderAdapterV2TurnInput> {
+): Effect.fn.Return<ProviderAdapter.ProviderAdapterV2TurnInput> {
   const now = yield* DateTime.now;
   const threadId = providerThread.appThreadId ?? THREAD_ID;
   const selection = modelSelection(providerThread.providerInstanceId);
@@ -353,10 +353,7 @@ const approval = (turnId: string) => ({
 describe("MuseAdapterV2", () => {
   it.effect("connects the thread's MCP credential on native start and resume", () =>
     Effect.gen(function* () {
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => McpProviderSession.clearMcpProviderSession(THREAD_ID)),
-      );
-      McpProviderSession.setMcpProviderSession({
+      yield* (yield* McpProviderSessions.McpProviderSessions).set({
         environmentId: EnvironmentId.make("test-environment"),
         threadId: THREAD_ID,
         providerSessionId: "test-session",
@@ -384,12 +381,35 @@ describe("MuseAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("selects the runtime mode's permission profile on native start and resume", () =>
+    Effect.gen(function* () {
+      for (const [runtimeMode, profile, approvalMode] of [
+        ["approval-required", ":ask-me", "promptUnmatched"],
+        ["full-access", ":unrestricted", "allowAll"],
+      ] as const) {
+        const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          ...runtimePolicy,
+          runtimeMode,
+        });
+        const fresh = yield* makeFakeMuse();
+        yield* makeHarness(fresh, INSTANCE_ID, undefined, undefined, undefined, policy);
+        const started = yield* fresh.takeCall("session/start");
+        assert.strictEqual(started.params.permissionProfile, profile);
+        assert.strictEqual(started.params.approvalMode, approvalMode);
+
+        const saved = yield* makeFakeMuse();
+        yield* makeHarness(saved, INSTANCE_ID, "saved-session", undefined, undefined, policy);
+        const resumed = yield* saved.takeCall("session/resume");
+        assert.strictEqual(resumed.params.permissionProfile, profile);
+        const mode = yield* saved.takeCall("session/setApprovalMode");
+        assert.strictEqual(mode.params.mode, approvalMode);
+      }
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("rejects a host without session MCP support before opening a native session", () =>
     Effect.gen(function* () {
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => McpProviderSession.clearMcpProviderSession(THREAD_ID)),
-      );
-      McpProviderSession.setMcpProviderSession({
+      yield* (yield* McpProviderSessions.McpProviderSessions).set({
         environmentId: EnvironmentId.make("test-environment"),
         threadId: THREAD_ID,
         providerSessionId: "test-session",
@@ -431,13 +451,10 @@ describe("MuseAdapterV2", () => {
       for (const kind of ["sessionNotFound", "notFound"] as const) {
         const fake = yield* makeFakeMuse();
         const allocated = yield* preallocatedProviderThread();
-        const adapter = makeMuseAdapterV2({
+        const adapter = yield* makeMuseAdapterV2({
           instanceId: INSTANCE_ID,
           settings: museSettings,
           environment: { PATH: "/fake/bin" },
-          idAllocator: yield* IdAllocator.IdAllocatorV2,
-          host: yield* ProviderHost,
-          fileSystem: yield* FileSystem.FileSystem,
           createHost: async () => fake.host,
         });
         const runtime = yield* adapter.openSession({
@@ -509,6 +526,41 @@ describe("MuseAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("pins Windows turns to Muse's verbatim root and starts Muse in the plain path", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      let hostCwd: string | undefined;
+      const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        ...runtimePolicy,
+        cwd: "C:\\work\\repo",
+      });
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        policy,
+        {
+          createHost: async (options) => {
+            hostCwd = options.cwd;
+            return fake.host;
+          },
+        },
+      );
+      yield* startConversation(harness, fake);
+      const turnStart = fake.calls.find((call) => call.method === "turn/start");
+      // Muse 1.4.3 rejects any other form: "expected a canonical path (resolves to \\?\C:\…)".
+      assert.deepStrictEqual(turnStart?.params.workspaceRoots, ["\\\\?\\C:\\work\\repo"]);
+      // The muse.cmd launcher runs under cmd.exe, which cannot start in a verbatim directory.
+      assert.strictEqual(hostCwd, "C:\\work\\repo");
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.scoped,
+      Effect.provide(testLayer),
+    ),
+  );
+
   it.effect("skips an unreadable usage notification without ending the turn", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();
@@ -525,7 +577,6 @@ describe("MuseAdapterV2", () => {
   it.effect("moves a resumed session on another model back to the catalog default", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();
-      // The saved session last ran MODEL; the catalog's default is another model.
       const harness = yield* makeHarness(
         fake,
         INSTANCE_ID,
@@ -629,7 +680,6 @@ describe("MuseAdapterV2", () => {
         });
         const result = yield* makeHarness(fake).pipe(Effect.exit);
         assert.strictEqual(result._tag, "Failure");
-        // A failed host closes in the background so the failure shows at once.
         yield* Effect.promise(() => fake.host.exited);
         assert.strictEqual(fake.closeCount(), 1);
         assert.strictEqual(fake.calls.filter((call) => call.method === "turn/start").length, 0);
@@ -752,7 +802,6 @@ describe("MuseAdapterV2", () => {
         .respondToRuntimeRequest({ requestId: pending.runtimeRequest.id, decision: "decline" })
         .pipe(Effect.forkScoped);
       yield* fake.takeCall("approval/decide");
-      // Muse's native decision for this choice maps to decline too; "cancel" proves it was ours.
       yield* fake.emit("approval/resolved", {
         approvalId: "approval-1",
         turnId: nativeId,
@@ -771,7 +820,7 @@ describe("MuseAdapterV2", () => {
   it.effect("lets a user turn take a held Muse report turn, approvals included", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();
-      const offers: Array<ProviderContinuationRequest> = [];
+      const offers: Array<ProviderContinuationRequests.ProviderContinuationRequest> = [];
       const harness = yield* makeHarness(
         fake,
         INSTANCE_ID,
@@ -781,11 +830,9 @@ describe("MuseAdapterV2", () => {
         runtimePolicy,
         { continuationRequests: { offer: (request) => Effect.sync(() => offers.push(request)) } },
       );
-      // A finished workflow's report turn starts while T3 runs nothing: it is held.
       yield* fake.emit("turn/started", { turnId: "report-1" });
       yield* Effect.yieldNow;
       assert.lengthOf(offers, 1);
-      // The user sends a message first; Muse runs the report before it.
       const { nativeId } = yield* startConversation(harness, fake);
       yield* fake.emit("approval/requested", approval("report-1"));
       const asked = yield* harness.takeEvent(
@@ -802,7 +849,6 @@ describe("MuseAdapterV2", () => {
       yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
       const terminal = yield* harness.takeEvent("turn.terminal");
       assert.strictEqual(terminal.status, "completed");
-      // The user turn took it, so the continuation is not dispatched.
       const dispatched = yield* offers[0]!.dispatchIfCurrent!(Effect.succeed("run"));
       assert.isTrue(Option.isNone(dispatched));
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
@@ -815,7 +861,6 @@ describe("MuseAdapterV2", () => {
       const { nativeId } = yield* startConversation(harness, fake);
       yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
       yield* harness.takeEvent("turn.terminal");
-      // Muse runs workflow children without the session's allowAll mode.
       const childApproval = { ...approval("child-run-1"), subagentOrigin: { subagentId: "a7" } };
       yield* fake.emit("approval/requested", childApproval);
       const asked = yield* harness.takeEvent("runtime_request.updated");
@@ -833,7 +878,7 @@ describe("MuseAdapterV2", () => {
   it.effect("keeps a workflow child's approval pending for the user past the turn's end", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();
-      const policy = ProviderAdapterV2RuntimePolicy.make({
+      const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
         ...runtimePolicy,
         runtimeMode: "approval-required",
       });
@@ -1027,8 +1072,6 @@ describe("MuseAdapterV2", () => {
       const fake = yield* makeFakeMuse();
       const harness = yield* makeHarness(fake);
       const { nativeId } = yield* startConversation(harness, fake);
-      // Neither the tool call that wrote the list nor Muse's per-step reminder
-      // child may show as a generic tool row.
       yield* fake.emit("item/completed", {
         turnId: nativeId,
         item: {
@@ -1102,6 +1145,121 @@ describe("MuseAdapterV2", () => {
       );
       assert.isTrue((yield* harness.adapter.getCapabilities()).planning.emitsPlanUpdated);
       assert.isTrue((yield* harness.adapter.getCapabilities()).planning.emitsTodoList);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("opens a prompt-and-result child thread for a native subagent", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const { nativeId } = yield* startConversation(harness, fake);
+      yield* fake.emit("item/started", {
+        turnId: nativeId,
+        item: {
+          itemId: "sub-1",
+          kind: "subagent",
+          revision: 1,
+          status: "inProgress",
+          turnId: nativeId,
+          subagentId: "subagent-1",
+          controlStatus: "running",
+          childSessionId: "child-session-1",
+          objective: "Check the thing",
+          role: "general-purpose",
+        },
+      });
+      const created = yield* harness.takeEvent("app_thread.created");
+      const childThreadId = created.appThread.id;
+      yield* fake.emit("item/updated", {
+        turnId: nativeId,
+        item: {
+          itemId: "sub-1",
+          kind: "subagent",
+          revision: 2,
+          status: "inProgress",
+          turnId: nativeId,
+          subagentId: "subagent-1",
+          controlStatus: "resultReady",
+          childSessionId: "child-session-1",
+          objective: "Check the thing",
+          result: { summary: "All done" },
+        },
+      });
+      const completed = yield* harness.takeEvent(
+        "subagent.updated",
+        (event) => event.subagent.status === "completed",
+      );
+      assert.strictEqual(completed.subagent.title, created.appThread.title);
+      const result = yield* harness.takeEvent(
+        "message.updated",
+        (event) => event.message.threadId === childThreadId && event.message.role === "assistant",
+      );
+      assert.strictEqual(result.message.text, "All done");
+      yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+      const terminal = yield* harness.takeEvent("turn.terminal");
+      assert.strictEqual(terminal.status, "completed");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps a workflow child's first label after later revisions drop it", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const { nativeId } = yield* startConversation(harness, fake);
+      const workflowItem = (revision: number, children: unknown) => ({
+        itemId: "wf-1",
+        kind: "workflow",
+        revision,
+        status: "inProgress",
+        turnId: nativeId,
+        entryId: "Probe workflow",
+        children,
+      });
+      yield* fake.emit("item/started", {
+        turnId: nativeId,
+        item: workflowItem(1, [{ childId: "c1", attempt: 1, status: "scheduled", label: "ping" }]),
+      });
+      const scheduled = yield* harness.takeEvent("subagent.updated");
+      assert.strictEqual(scheduled.subagent.title, "ping");
+      yield* fake.emit("item/updated", {
+        turnId: nativeId,
+        item: workflowItem(2, [{ childId: "c1", attempt: 1, status: "started" }]),
+      });
+      const started = yield* harness.takeEvent(
+        "subagent.updated",
+        (event) => event.subagent.status === "running",
+      );
+      assert.strictEqual(started.subagent.title, "ping");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("shows a workflow child that completed with a failure kind as failed", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const { nativeId } = yield* startConversation(harness, fake);
+      yield* fake.emit("item/started", {
+        turnId: nativeId,
+        item: {
+          itemId: "wf-1",
+          kind: "workflow",
+          revision: 1,
+          status: "inProgress",
+          turnId: nativeId,
+          children: [
+            {
+              childId: "c1",
+              attempt: 1,
+              status: "finished",
+              terminal: "completed",
+              failureKind: "budget_exhausted",
+            },
+          ],
+        },
+      });
+      const child = yield* harness.takeEvent("subagent.updated");
+      assert.strictEqual(child.subagent.status, "failed");
+      assert.strictEqual(child.subagent.result, "budget_exhausted");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });

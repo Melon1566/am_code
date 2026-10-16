@@ -41,7 +41,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         expect(
           yield* resolveClaudeHomePath(
             { homePath: "" },
-            mergeProviderInstanceEnvironment(
+            yield* mergeProviderInstanceEnvironment(
               [{ name: "CLAUDE_CONFIG_DIR", value: "~/.claude-shared", sensitive: false }],
               {},
             ),

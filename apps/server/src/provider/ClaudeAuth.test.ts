@@ -12,7 +12,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import type { PtyExitEvent, PtyProcess } from "../terminal/PtyAdapter.ts";
+import type { PtyExitEvent, PtyProcess } from "@t3tools/shared/PtyAdapter";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeClaudeAuth, type ClaudeAuth } from "./ClaudeAuth.ts";
 import { setInstanceEnvironmentVariable } from "./instanceEnvironmentSettings.ts";

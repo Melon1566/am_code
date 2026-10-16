@@ -5,7 +5,7 @@ import type * as Scope from "effect/Scope";
 import type { CodexAppServerClient } from "effect-codex-app-server/client";
 
 import type { ProviderAuthController } from "@t3tools/provider-core/server/auth";
-import * as ProviderAuthFlow from "./ProviderAuthFlow.ts";
+import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 
 const FAILED_MESSAGE = "Codex sign-in failed. Start sign-in again.";
 

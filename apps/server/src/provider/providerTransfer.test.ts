@@ -1,4 +1,4 @@
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId, ProviderDriverKind, ServerSettingsError } from "@t3tools/contracts";
@@ -306,7 +306,7 @@ it.layer(NodeServices.layer)("provider transfer", (it) => {
         expect(settings.providerInstances[claudeId]?.config).toEqual(
           settings.providerInstances[claudeWorkId]?.config,
         );
-        if ((yield* HostProcessPlatform) !== "win32") {
+        if ((yield* HostProcess.Platform) !== "win32") {
           expect((yield* fs.stat(`${a.shadowHomePath}/auth.json`)).mode & 0o777).toBe(0o600);
         }
       }).pipe(

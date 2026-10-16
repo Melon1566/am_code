@@ -205,7 +205,6 @@ describe("server browser element refs", () => {
     await ServerBrowserPage.click(page, { locator: "#target", clickCount: 2 });
     await ServerBrowserPage.hover(page, { locator: "#hover" });
     expect(await page.isVisible("#menu")).toBe(true);
-    // A visible label selects the same option as its value.
     expect(await ServerBrowserPage.select(page, { locator: "#size", values: ["Large"] })).toEqual({
       selected: ["l"],
     });
@@ -275,5 +274,44 @@ describe("server browser element refs", () => {
       ServerBrowserPage.evaluate(cdp, { expression: "for (;;) {}" }, 200),
     ).rejects.toMatchObject({ tag: "PreviewAutomationTimeoutError" });
     expect(await ServerBrowserPage.evaluate(cdp, { expression: "1 + 1" }, 2_000)).toBe(2);
+  });
+});
+
+describe("server browser drag", () => {
+  it("fails the drag, not the server, when it times out while the cursor is still moving", async () => {
+    const timedOut = new Error("locator.dragTo: Timeout 30000ms exceeded.");
+    const box = { x: 0, y: 0, width: 20, height: 20 };
+    const targetBox = Promise.withResolvers<typeof box>();
+    const page = {
+      locator: (selector: string) =>
+        selector === "#card"
+          ? {
+              scrollIntoViewIfNeeded: async () => {},
+              boundingBox: async () => box,
+              dragTo: () => Promise.reject(timedOut),
+            }
+          : { boundingBox: () => targetBox.promise },
+    } as unknown as Page;
+    const unobserved: Array<unknown> = [];
+    const onUnhandled = (reason: unknown) => unobserved.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      let finished = false;
+      const settled = ServerBrowserPage.drag(page, { source: "#card", target: "#lane" }).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      void settled.then(() => (finished = true));
+      // Two macrotask turns: Node reports a rejection nobody observed after the first.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(finished).toBe(false);
+      targetBox.resolve(box);
+
+      expect(await settled).toBe(timedOut);
+      expect(unobserved).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 });

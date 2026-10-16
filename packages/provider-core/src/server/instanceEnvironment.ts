@@ -1,22 +1,25 @@
 import type { ProviderInstanceEnvironment } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Effect from "effect/Effect";
 
 import { expandHomePath } from "./pathExpansion.ts";
 
-export function mergeProviderInstanceEnvironment(
+export const mergeProviderInstanceEnvironment = Effect.fn(function* (
   environment: ProviderInstanceEnvironment | undefined,
   baseEnv: NodeJS.ProcessEnv = process.env,
   proxyUrl?: string,
-): NodeJS.ProcessEnv {
+) {
   if ((!environment || environment.length === 0) && !proxyUrl) {
     return baseEnv;
   }
 
+  const home = yield* HostProcess.HomeDirectory;
   const next: NodeJS.ProcessEnv = { ...baseEnv };
   for (const variable of environment ?? []) {
     // Child processes do not apply shell expansion to environment values.
     next[variable.name] =
       variable.name === "CODEX_HOME" || variable.name === "CLAUDE_CONFIG_DIR"
-        ? expandHomePath(variable.value)
+        ? expandHomePath(variable.value, home)
         : variable.value;
   }
   if (proxyUrl) {
@@ -30,4 +33,4 @@ export function mergeProviderInstanceEnvironment(
     next.no_proxy = next.NO_PROXY;
   }
   return next;
-}
+});

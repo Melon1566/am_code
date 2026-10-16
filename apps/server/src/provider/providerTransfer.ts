@@ -202,9 +202,9 @@ export const makeProviderTransfer = Effect.fn("makeProviderTransfer")(function* 
     const usedIds = new Set(Object.keys(deriveProviderInstanceConfigMap(current)));
     const next: Record<ProviderInstanceId, ProviderInstanceConfig> = {};
     const imported: { sourceId: ProviderInstanceId; instanceId: ProviderInstanceId }[] = [];
-    const importId = yield* crypto.randomUUIDv4.pipe(
-      Effect.mapError(() => transferError("Could not prepare the provider import.")),
-    );
+    const importId = yield* crypto
+      .randomUUIDv4()
+      .pipe(Effect.mapError(() => transferError("Could not prepare the provider import.")));
     const root = path.join(options.stateDir, "provider-imports", importId);
     const files = new Map<string, string>();
     const directories = new Set<string>();

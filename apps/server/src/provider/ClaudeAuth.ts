@@ -3,8 +3,8 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 
 import type { ProviderAuthController } from "@t3tools/provider-core/server/auth";
-import type { PtyAdapter } from "../terminal/PtyAdapter.ts";
-import * as ProviderAuthFlow from "./ProviderAuthFlow.ts";
+import type { PtyAdapter } from "@t3tools/shared/PtyAdapter";
+import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 import {
   findClaudeAuthorizationUrl,
   findClaudeSetupToken,
