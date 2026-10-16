@@ -20,7 +20,9 @@ ARCH ?= arm64
 # Recipes call node by absolute path: GNU make execs simple commands with its
 # own PATH, so the export below only reaches programs the build spawns.
 NODE_BIN ?= /opt/homebrew/opt/node/bin
-export PATH := $(NODE_BIN):$(CURDIR)/node_modules/.bin:$(PATH)
+# Homebrew's rustup keeps cargo and rustc outside /opt/homebrew/bin.
+RUST_BIN ?= /opt/homebrew/opt/rustup/bin
+export PATH := $(NODE_BIN):$(RUST_BIN):$(CURDIR)/node_modules/.bin:$(PATH)
 
 # Apple signing credentials are CI-only secrets, so a local build is ad-hoc
 # signed. Endpoint security tools read an unsigned process that walks the
@@ -56,7 +58,9 @@ app: node_modules .env
 	@echo "Built $(APP)"
 
 open:
-	@if ps -axo comm= | grep -qF "$(APP_NAME)/Contents/MacOS/"; then \
+	@# Ask LaunchServices rather than matching binary paths: helpers such as the
+	@# agent-device daemon run the bundle's binary as node and can outlive the app.
+	@if [ -n "$$(lsappinfo find bundleid=com.t3tools.t3code)" ]; then \
 		echo "T3 Code is already running. Quit it first so only one server opens ~/.t3/userdata."; \
 		exit 1; \
 	fi
@@ -126,8 +130,11 @@ proxy-restart: proxy-stop
 proxy-shell:
 	@PATH="$(HOME)/.local/bin:$$PATH" aws ssm start-session --target $(PROXY_INSTANCE)
 
-node_modules:
-	$(NODE_BIN)/npx -y pnpm@11.10.0 install --frozen-lockfile
+# Reinstall whenever the lockfile is newer, e.g. after an upstream merge.
+# pnpm may leave the directory's mtime alone, so touch it to settle the rule.
+node_modules: pnpm-lock.yaml
+	$(NODE_BIN)/npx -y pnpm@11.10.0 install --frozen-lockfile --config.confirmModulesPurge=false
+	@touch node_modules
 
 .env:
 	cp .env.example .env
